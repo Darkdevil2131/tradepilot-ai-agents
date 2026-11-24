@@ -64,5 +64,13 @@ def validate_documents(shipment: ShipmentRequest) -> dict:
 def compare_quotes(quotes: list[Quote], feasible_modes: set[str]) -> dict:
     now = datetime.now(timezone.utc)
     eligible = [q for q in quotes if q.mode in feasible_modes and (q.valid_until is None or q.valid_until.replace(tzinfo=q.valid_until.tzinfo or timezone.utc) > now)]
-    ranked = sorted(eligible,key=lambda q:q.amount)
-    return {"quotes_received":len(quotes),"eligible_quotes":len(eligible),"ranked_quotes":[{"carrier_id":q.carrier_id,"mode":q.mode,"amount":q.amount,"currency":q.currency,"valid_until":q.valid_until.isoformat() if q.valid_until else None,"provenance":q.provenance.value} for q in ranked],"recommendation":None if not ranked else {"carrier_id":ranked[0].carrier_id,"mode":ranked[0].mode,"amount":ranked[0].amount,"currency":ranked[0].currency,"requires_human_approval":True},"note":"Quote ranking compares user-provided quotes only; it is not a booking or market-price check."}
+    currencies={q.currency for q in eligible}
+    same_currency=len(currencies)<=1
+    ranked=sorted(eligible,key=(lambda q:(q.amount,q.carrier_id)) if same_currency else (lambda q:(q.currency,q.amount,q.carrier_id)))
+    recommendation=None
+    warning=None
+    if ranked and same_currency:
+        recommendation={"carrier_id":ranked[0].carrier_id,"mode":ranked[0].mode,"amount":ranked[0].amount,"currency":ranked[0].currency,"requires_human_approval":True}
+    elif ranked:
+        warning="Quotes use multiple currencies; no FX conversion is configured, so no single cheapest recommendation is made. Compare amounts within each currency and obtain human review."
+    return {"quotes_received":len(quotes),"eligible_quotes":len(eligible),"ranked_quotes":[{"carrier_id":q.carrier_id,"mode":q.mode,"amount":q.amount,"currency":q.currency,"valid_until":q.valid_until.isoformat() if q.valid_until else None,"provenance":q.provenance.value} for q in ranked],"recommendation":recommendation,"recommendation_warning":warning,"note":"Quote ranking compares user-provided quotes only; no FX conversion, market-price lookup, or booking is performed."}

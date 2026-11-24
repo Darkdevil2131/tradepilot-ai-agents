@@ -121,6 +121,7 @@ class CarrierRecord(StrictModel):
 class CarrierResearchOutput(StrictModel):
     carriers: list[CarrierRecord]
     excluded_capacity: int = Field(ge=0)
+    excluded_coverage: int = Field(ge=0)
     provenance: Literal["SYNTHETIC"]
     notice: str
 
@@ -163,4 +164,5 @@ class ProcurementOutput(StrictModel):
     eligible_quotes: int = Field(ge=0)
     ranked_quotes: list[RankedQuote]
     recommendation: ProcurementRecommendation | None
+    recommendation_warning: str | None = None
     note: str

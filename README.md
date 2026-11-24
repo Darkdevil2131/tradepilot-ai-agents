@@ -5,10 +5,10 @@ A backend prototype for shipment decision support. It uses a LangGraph `StateGra
 ## Current capabilities and limits
 
 - Route estimates use a small built-in city-coordinate table, straight-line distance, and fixed demo factors. They are not navigable routes, live ETAs, or carrier quotes.
-- Carrier records, capacities, coverage, and reliability scores are fictional synthetic fixtures.
+- Carrier records, capacities, coverage, and reliability scores are fictional synthetic fixtures. Demo coverage checks distinguish sample domestic India city pairs from cross-border routes; they are not verified carrier service areas.
 - Risk checks are basic keyword and completeness rules. There is no live customs, sanctions, tariff, or jurisdiction screening.
 - Document validation checks user-entered fields. It does not read PDFs, scans, images, or OCR.
-- Procurement ranks submitted quotations only, excludes expired quotes and routes disallowed by the analysis, and always requires human approval. It never books or contacts a carrier.
+- Procurement ranks submitted quotations only, excludes expired quotes and routes disallowed by the analysis, avoids ranking raw amounts across currencies when FX data is absent, and always requires human approval. It never books or contacts a carrier.
 - Every agent result carries provenance labels where applicable: `USER_PROVIDED`, `ESTIMATED`, or `SYNTHETIC`. The health endpoint confirms that no live logistics feeds are configured.
 - Offline mode is the default. Gemini is an optional narrative pass over tool output only; it cannot change calculations, call tools, or establish facts. Its model and API key are supplied via environment variables. It is disabled by default, and quota failures degrade to deterministic results.
 - A Google API key alone does not guarantee zero cost: account/project billing, quotas, and free eligibility are controlled by Google. Keep Gemini disabled unless the owner has confirmed the project is constrained to the no-cost tier and has billing disabled. Never commit a key.
@@ -70,7 +70,7 @@ The graph conditionally skips document validation when no documents are supplied
 pytest
 ```
 
-Tests cover agent behavior, deterministic tools, workflow and retry behavior, invalid data, authentication, missing carrier capacity, unrealistic deadlines, missing documents, offline model operation, and API documentation. Test results should be reported only after running this command in the target environment.
+Tests cover agent behavior, deterministic tools, workflow and retry behavior, invalid data, authentication, carrier coverage and capacity, mixed-currency quote handling, unrealistic deadlines, missing documents, offline model operation, and API documentation. Test results should be reported only after running this command in the target environment.
 
 ## Security
 

@@ -38,3 +38,10 @@ def test_infeasible_deadline_does_not_admit_quotes():
     quotes=[Quote(carrier_id="Q1",mode="sea",amount=1)]
     result=compare_quotes(quotes,set())
     assert result["eligible_quotes"]==0 and result["recommendation"] is None
+
+def test_quotes_in_different_currencies_do_not_get_a_false_cheapest_pick():
+    quotes=[Quote(carrier_id="USD-QUOTE",mode="sea",amount=1000,currency="USD"),Quote(carrier_id="EUR-QUOTE",mode="sea",amount=10,currency="EUR")]
+    result=compare_quotes(quotes,{"sea"})
+    assert result["eligible_quotes"]==2
+    assert result["recommendation"] is None
+    assert "multiple currencies" in result["recommendation_warning"]

@@ -13,7 +13,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/shipments/analyze \
   --data @examples/analyze_shipment.json
 ```
 
-The response includes an `agents` object with per-agent status, results and provenance. `route_optimization` values are estimates; `carrier_research` records are synthetic; quotes are user-provided; the analysis is not a booking. `document_intelligence` is marked skipped when no documents are supplied.
+The response includes an `agents` object with per-agent status, results and provenance. `route_optimization` values are estimates; `carrier_research` records and coverage are synthetic; quotes are user-provided; the analysis is not a booking. Quotes with different currencies are not compared by raw amount because no FX conversion is configured. `document_intelligence` is marked skipped when no documents are supplied.
 
 ## Retrieve saved analysis
 
