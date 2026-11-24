@@ -19,6 +19,15 @@ CITY_COUNTRIES = {
 PORT_CITIES={"mumbai","chennai","kolkata","singapore","dubai","rotterdam","shanghai","london","new york","los angeles"}
 MODE_KMH = {"air": 750.0, "sea": 30.0, "road": 55.0}
 MODE_RATE_USD_TON_KM = {"air": 0.42, "sea": 0.025, "road": 0.09}
+DANGEROUS_GOODS_KEYWORDS = (
+    "chemical", "flammable", "lithium battery", "lithium batteries",
+    "lithium-ion", "lithium ion", "li-ion", "li ion", "battery", "batteries",
+    "explosive", "corrosive", "hazardous",
+)
+
+def contains_dangerous_goods_keyword(cargo_description: str) -> bool:
+    text = " ".join(cargo_description.casefold().replace("–", "-").replace("—", "-").split())
+    return any(term in text for term in DANGEROUS_GOODS_KEYWORDS)
 
 def haversine_km(origin: str, destination: str) -> float:
     a, b = CITY_COORDS.get(origin.casefold()), CITY_COORDS.get(destination.casefold())
@@ -71,7 +80,7 @@ def validate_documents(shipment: ShipmentRequest) -> dict:
     if bol and not bol.fields.get("consignee"): issues.append("bill_of_lading is missing consignee")
     packing = by_type.get("packing_list")
     if packing and not packing.fields.get("package_count"): issues.append("packing_list is missing package_count")
-    dangerous = any(term in shipment.cargo_description.casefold() for term in ("chemical","flammable","lithium battery","explosive","corrosive","hazardous"))
+    dangerous = contains_dangerous_goods_keyword(shipment.cargo_description)
     if dangerous and "dangerous_goods_declaration" not in by_type:
         missing.append("dangerous_goods_declaration")
     if shipment.incoterm and shipment.incoterm.upper() not in {"EXW","FCA","CPT","CIP","DAP","DPU","DDP","FAS","FOB","CFR","CIF"}:

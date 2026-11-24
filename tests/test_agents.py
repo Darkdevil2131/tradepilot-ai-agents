@@ -40,6 +40,10 @@ def test_risk_agent_flags_hazardous_cargo_and_missing_incoterm():
     assert "DANGEROUS_GOODS_REVIEW" in codes and "INCOTERM_NOT_PROVIDED" in codes
     assert result.live_screening is False
 
+def test_risk_agent_flags_lithium_ion_battery_variants():
+    result=RiskComplianceAgent().run(shipment(cargo_description="Li-ion batteries"))
+    assert "DANGEROUS_GOODS_REVIEW" in {flag.code for flag in result.flags}
+
 def test_document_agent_marks_missing_documents():
     result=DocumentIntelligenceAgent().run(shipment())
     assert result.valid is False and result.documents_checked==0

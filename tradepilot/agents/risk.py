@@ -1,10 +1,10 @@
 from ..models import ShipmentRequest, RiskComplianceOutput
+from ..tools import contains_dangerous_goods_keyword
 class RiskComplianceAgent:
     name="risk_compliance"
     authorized_tools=("local_rule_checks",)
     def run(self,shipment:ShipmentRequest)->RiskComplianceOutput:
-        description=shipment.cargo_description.casefold()
-        hazardous=any(x in description for x in ("chemical","flammable","lithium battery","explosive","corrosive","hazardous"))
+        hazardous=contains_dangerous_goods_keyword(shipment.cargo_description)
         flags=[]
         if hazardous: flags.append({"code":"DANGEROUS_GOODS_REVIEW","severity":"high","reason":"Cargo description matches a hazardous-goods keyword; classification and required declarations need qualified human review."})
         if shipment.declared_value is None: flags.append({"code":"VALUE_NOT_PROVIDED","severity":"medium","reason":"Declared value is absent; insurance and landed-cost review are incomplete."})
