@@ -32,3 +32,4 @@ def test_unrealistic_deadline_does_not_recommend_a_quote():
     result=LogisticsOrchestrator().analyze(s)
     assert result.agents["market_procurement"].data["eligible_quotes"]==0
     assert result.agents["market_procurement"].data["recommendation"] is None
+    assert result.agents["carrier_research"].data["carriers"]==[]
