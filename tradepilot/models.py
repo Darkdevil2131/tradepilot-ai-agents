@@ -26,6 +26,41 @@ class Quote(StrictModel):
 class ShippingDocument(StrictModel):
     document_type: Literal["commercial_invoice", "bill_of_lading", "packing_list", "certificate_of_origin", "dangerous_goods_declaration"]
     fields: dict[str, str | float | int | bool | None] = Field(default_factory=dict)
+    raw_text: str | None = Field(default=None, max_length=50_000)
+    provenance: Provenance = Provenance.USER_PROVIDED
+
+class OptimizationPreferences(StrictModel):
+    cost_weight: float = Field(default=0.40, ge=0, le=1)
+    time_weight: float = Field(default=0.30, ge=0, le=1)
+    risk_weight: float = Field(default=0.20, ge=0, le=1)
+    reliability_weight: float = Field(default=0.10, ge=0, le=1)
+
+    @model_validator(mode="after")
+    def at_least_one_objective(self):
+        if self.cost_weight + self.time_weight + self.risk_weight + self.reliability_weight <= 0:
+            raise ValueError("At least one optimization weight must be positive")
+        return self
+
+class DisruptionSignal(StrictModel):
+    signal_id: str = Field(min_length=1, max_length=80)
+    affected_modes: list[Literal["air", "sea", "road", "rail"]] = Field(default_factory=list, max_length=4)
+    affected_locations: list[str] = Field(default_factory=list, max_length=20)
+    severity: float = Field(ge=0, le=1)
+    delay_hours: float = Field(default=0, ge=0, le=10_000)
+    active: bool = True
+    provenance: Provenance = Provenance.USER_PROVIDED
+
+class SupplierOffer(StrictModel):
+    supplier_id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=160)
+    unit_price: float = Field(gt=0, le=100_000_000)
+    currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
+    lead_time_days: float = Field(ge=0, le=3650)
+    available_quantity: float = Field(gt=0, le=1_000_000_000)
+    quality_score: float = Field(ge=0, le=1)
+    origin: str = Field(min_length=2, max_length=100)
+    contact_email: str | None = Field(default=None, max_length=254)
+    certifications: list[str] = Field(default_factory=list, max_length=30)
     provenance: Provenance = Provenance.USER_PROVIDED
 
 class ImpactScenario(StrictModel):
@@ -51,6 +86,11 @@ class ShipmentRequest(StrictModel):
     quotes: list[Quote] = Field(default_factory=list, max_length=50)
     documents: list[ShippingDocument] = Field(default_factory=list, max_length=20)
     incoterm: str | None = Field(default=None, max_length=20)
+    optimization: OptimizationPreferences = Field(default_factory=OptimizationPreferences)
+    disruptions: list[DisruptionSignal] = Field(default_factory=list, max_length=50)
+    supplier_offers: list[SupplierOffer] = Field(default_factory=list, max_length=50)
+    required_certifications: list[str] = Field(default_factory=list, max_length=30)
+    required_quantity: float | None = Field(default=None, gt=0, le=1_000_000_000)
 
     @field_validator("origin", "destination")
     @classmethod
@@ -130,6 +170,9 @@ class RouteOption(StrictModel):
     legs: list[dict] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
     capacity_kg: float | None = Field(default=None, ge=0)
+    decision_score: float | None = Field(default=None, ge=0, le=1)
+    score_breakdown: dict[str, float] = Field(default_factory=dict)
+    disruption_ids: list[str] = Field(default_factory=list)
 
 class RouteOptimizationOutput(StrictModel):
     impact_comparison: dict | None = None
@@ -137,6 +180,8 @@ class RouteOptimizationOutput(StrictModel):
     recommended_route: RouteOption | None
     no_feasible_route: bool
     provenance: Literal["ESTIMATED"]
+    ranking_method: str = "weighted multi-objective deterministic ranking"
+    alternatives: list[dict] = Field(default_factory=list)
 
 class CarrierRecord(StrictModel):
     carrier_id: str
@@ -151,6 +196,9 @@ class CarrierRecord(StrictModel):
     provenance: Literal["SYNTHETIC"]
     capacity_available: bool
     coverage_match: bool
+    contact: dict[str, str] = Field(default_factory=dict)
+    certifications: list[str] = Field(default_factory=list)
+    service_score: float | None = Field(default=None, ge=0, le=1)
 
 class CarrierResearchOutput(StrictModel):
     leg_plans: list[dict] = Field(default_factory=list)
@@ -159,6 +207,7 @@ class CarrierResearchOutput(StrictModel):
     excluded_coverage: int = Field(ge=0)
     provenance: Literal["SYNTHETIC"]
     notice: str
+    recommended_carrier: dict | None = None
 
 class RiskFlag(StrictModel):
     code: str
@@ -171,6 +220,7 @@ class RiskComplianceOutput(StrictModel):
     checked_rules: list[str]
     provenance: Literal["USER_PROVIDED"]
     live_screening: Literal[False]
+    disruption_summary: list[dict] = Field(default_factory=list)
 
 class DocumentValidationOutput(StrictModel):
     valid: bool
@@ -178,6 +228,7 @@ class DocumentValidationOutput(StrictModel):
     missing_document_types: list[str]
     issues: list[str]
     provenance: Literal["USER_PROVIDED"]
+    extracted_fields: dict[str, dict] = Field(default_factory=dict)
 
 class RankedQuote(StrictModel):
     includes_insurance: bool = False
@@ -202,4 +253,7 @@ class ProcurementOutput(StrictModel):
     ranked_quotes: list[RankedQuote]
     recommendation: ProcurementRecommendation | None
     recommendation_warning: str | None = None
+    ranked_supplier_offers: list[dict] = Field(default_factory=list)
+    supplier_recommendation: dict | None = None
+    supplier_warning: str | None = None
     note: str
