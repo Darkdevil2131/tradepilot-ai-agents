@@ -74,7 +74,21 @@ class LogisticsOrchestrator:
     def _procurement(self,s):
         route=s.get("results",{}).get("route_optimization")
         modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
-        return self._safe(s,"market_procurement",lambda:self.procurement.run(s["shipment"],modes))
+        carrier = s["results"]["carrier_research"]
+        supported = {(row["carrier_id"], row["mode"]) for row in carrier.data.get("carriers", [])}
+        shipment = s["shipment"]
+        matching = [q for q in shipment.quotes if (q.carrier_id, q.mode) in supported]
+        filtered = shipment.model_copy(update={"quotes": matching})
+        def compare_supported():
+            decision = self.procurement.run(filtered, modes)
+            decision.quotes_received = len(shipment.quotes)
+            if len(matching) < len(shipment.quotes):
+                decision.note += " Quotes without an eligible carrier/mode match were excluded."
+            if any(flag["severity"] == "high" for flag in s["results"]["risk_compliance"].data.get("flags", [])) or s["results"]["risk_compliance"].status != "completed":
+                decision.recommendation = None
+                decision.recommendation_warning = "Cargo acceptance needs human review."
+            return decision
+        return self._safe(s,"market_procurement",compare_supported)
     def _finalize(self,s): return {}
     def analyze(self,shipment:ShipmentRequest)->ShipmentAnalysis:
         sid=shipment.shipment_id or f"TP-{uuid4().hex[:12].upper()}"

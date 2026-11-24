@@ -76,3 +76,19 @@ constraint. The fixture covers Dubai to Mumbai, including road transfers.
 Set `closed_leg_ids` or `freight_multiplier` within `impact_scenario` to
 compare disruptions and prices. Empty options include rejection reasons.
 The fixture has no contracted quotes or carrier assignments.
+
+## Synthetic carrier evaluation
+
+Submit `examples/synthetic_provider_comparison.json` to the analysis endpoint.
+The lower air offer exceeds the demo carrier's capacity. Inspect
+`agents.market_procurement.data.recommendation` for the eligible sea offer.
+A quote must match both the carrier ID and mode on the eligible shortlist.
+A high severity cargo flag holds the procurement recommendation for review.
+The amounts are synthetic submitted totals. Charges omitted from an offer
+are not estimated by this comparison.
+
+Carrier reliability is the on-time fraction for the exact provider and
+directional lane. With zero matching rows it is null. See
+`tradepilot/fixtures/history.csv` for the evidence and
+`scripts/generate_history.py` for its deterministic generator. The dataset
+is development material; the workflow uses aggregation, without model training.

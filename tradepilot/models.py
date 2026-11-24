@@ -130,7 +130,10 @@ class CarrierRecord(StrictModel):
     mode: Literal["air", "sea", "road"]
     regions: list[str]
     capacity_kg: float
-    reliability_score: float = Field(ge=0,le=1)
+    reliability_score: float | None = Field(ge=0,le=1)
+    history_count: int
+    on_time_count: int
+    history_reference: str
     provenance: Literal["SYNTHETIC"]
     capacity_available: bool
     coverage_match: bool

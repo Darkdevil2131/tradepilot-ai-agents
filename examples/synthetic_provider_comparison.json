@@ -1,0 +1,1 @@
+{"origin":"Mumbai","destination":"Singapore","cargo_description":"machine parts","weight_kg":12000,"allowed_modes":["air","sea"],"quotes":[{"carrier_id":"DEMO-AIR-01","mode":"air","amount":100,"currency":"USD","provenance":"SYNTHETIC"},{"carrier_id":"DEMO-SEA-01","mode":"sea","amount":200,"currency":"USD","provenance":"SYNTHETIC"}]}
