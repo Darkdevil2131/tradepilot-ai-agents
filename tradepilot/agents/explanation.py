@@ -40,6 +40,13 @@ def explain_decision(shipment, results, decision) -> StrategicExplanation:
     if decision["status"] == "incomplete":
         report.conclusion = "The investigation is incomplete because a required specialist failed."
         return report
+    if decision["status"] == "blocked":
+        blocked = [gate["gate"] for gate in decision["gates"] if gate["status"] == "blocked"]
+        if "commercial_offer" in blocked:
+            report.conclusion = "A supported arrangement is unavailable because no eligible provider-backed plan or quote remains. Resolve the listed gates before rerunning the investigation."
+        else:
+            report.conclusion = "No arrangement can proceed to approval until these gates are resolved: " + ", ".join(blocked) + "."
+        return report
     if plan:
         scenario = shipment.impact_scenario
         report.objective = "Minimize synthetic freight plus modeled production stoppage loss, subject to leg and deadline constraints."

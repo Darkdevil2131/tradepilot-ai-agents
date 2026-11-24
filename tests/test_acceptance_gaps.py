@@ -13,6 +13,11 @@ def test_packet(client, headers):
     assert not result["valid"]
     for text in ("Duplicate", "total", "package_count", "Consignee"):
         assert any(text in item for item in result["issues"])
+    analysis = client.post("/api/v1/shipments/analyze", headers=headers, json={"origin":"Mumbai","destination":"Singapore","weight_kg":1,"cargo_description":"parts","quotes":[{"carrier_id":"DEMO-AIR-01","mode":"air","amount":100}],"documents":docs}).json()
+    decision = analysis["agents"]["logistics_orchestrator"]["data"]["decision"]
+    assert decision["status"] == "blocked"
+    assert decision["candidate"] is None
+    assert next(gate for gate in decision["gates"] if gate["gate"] == "documents")["status"] == "blocked"
 
 
 def test_sourced_revision(client,headers):

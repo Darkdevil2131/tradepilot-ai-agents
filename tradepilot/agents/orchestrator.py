@@ -3,7 +3,7 @@ from typing import TypedDict, Any
 from uuid import uuid4
 from datetime import datetime, timezone
 from langgraph.graph import StateGraph, START, END
-from ..models import AgentResult, Provenance, ShipmentRequest, ShipmentAnalysis, StrictModel
+from ..models import AgentResult, DecisionGate, Provenance, ShipmentRequest, ShipmentAnalysis, StrictModel
 from .route import RouteOptimizationAgent
 from .carrier import CarrierResearchAgent, source_leg_plans
 from .risk import RiskComplianceAgent
@@ -124,17 +124,38 @@ class LogisticsOrchestrator:
         failed=any(results[k].status=="failed" for k in required)
         commercial = results["market_procurement"].data
         documents = results["document_intelligence"].data
+        risk = results["risk_compliance"].data
         review = list(documents.get("issues", []))
         review.extend("Supply or review " + kind for kind in documents.get("missing_document_types", []))
-        review.extend(flag["reason"] for flag in results["risk_compliance"].data.get("flags", []))
+        review.extend(flag["reason"] for flag in risk.get("flags", []))
         if shipment.dimensions_cm is None:
             review.append("Supply largest package dimensions to verify service fit.")
         candidate = commercial.get("sourced_plan") or commercial.get("recommendation")
+        gates = []
+        if results["route_optimization"].status != "completed":
+            gates.append(DecisionGate(gate="route_feasibility", status="blocked", reason="Route analysis failed.", evidence_path="/agents/route_optimization"))
+        elif candidate is None:
+            gates.append(DecisionGate(gate="commercial_offer", status="blocked", reason="No eligible provider-backed plan or quote is available.", evidence_path="/agents/market_procurement/data"))
+        else:
+            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason="The selected candidate passed the configured route and capacity checks.", evidence_path="/agents/route_optimization/data"))
+            gates.append(DecisionGate(gate="commercial_offer", status="passed", reason="The selected candidate has eligible synthetic tariff evidence or a matched submitted quote.", evidence_path="/agents/market_procurement/data"))
+        if not documents.get("valid", False):
+            gates.append(DecisionGate(gate="documents", status="blocked", reason="Required documents are missing or contain unresolved inconsistencies.", evidence_path="/agents/document_intelligence/data"))
+        else:
+            gates.append(DecisionGate(gate="documents", status="passed", reason="Submitted document fields passed configured validation checks.", evidence_path="/agents/document_intelligence/data"))
+        if any(flag["severity"] == "high" for flag in risk.get("flags", [])):
+            gates.append(DecisionGate(gate="compliance", status="blocked", reason="A high-severity cargo or compliance review is required.", evidence_path="/agents/risk_compliance/data/flags"))
+        elif risk.get("human_review_required"):
+            gates.append(DecisionGate(gate="compliance", status="review_required", reason="Compliance context needs human review before approval.", evidence_path="/agents/risk_compliance/data/flags"))
+        else:
+            gates.append(DecisionGate(gate="compliance", status="passed", reason="No configured compliance review rule fired.", evidence_path="/agents/risk_compliance/data"))
+        blocked = any(gate.status == "blocked" for gate in gates)
         results["logistics_orchestrator"].data["decision"] = {
-            "status": "incomplete" if failed else "conditional_recommendation" if candidate else "no_supported_offer",
-            "candidate": candidate if not failed else None,
+            "status": "incomplete" if failed else "blocked" if blocked else "ready_for_human_approval" if candidate else "no_supported_offer",
+            "candidate": candidate if not failed and not blocked else None,
             "review_items": review,
             "requires_human_approval": True,
+            "gates": [gate.model_dump() for gate in gates],
         }
         explanation = explain_decision(shipment, results, results["logistics_orchestrator"].data["decision"])
         results["logistics_orchestrator"].data["explanation"] = explanation.model_dump()

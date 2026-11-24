@@ -97,6 +97,12 @@ class ShipmentAnalysis(StrictModel):
     agents: dict[str, AgentResult]
     summary: str
 
+class DecisionGate(StrictModel):
+    gate: str
+    status: Literal["passed", "review_required", "blocked"]
+    reason: str
+    evidence_path: str
+
 class DocumentValidationRequest(StrictModel):
     shipment: ShipmentRequest
 
