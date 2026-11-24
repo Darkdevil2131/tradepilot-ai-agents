@@ -4,11 +4,11 @@ A backend prototype for shipment decision support. It uses a LangGraph `StateGra
 
 ## Current capabilities and limits
 
-- Route estimates use a small built-in city-coordinate table, straight-line distance, and fixed demo factors. Mode eligibility uses a small country/port sample table; it is not a verified transport connection. They are not navigable routes, live ETAs, or carrier quotes.
-- Carrier records, capacities, coverage, and reliability scores are fictional synthetic fixtures. Demo coverage checks distinguish sample domestic India city pairs from cross-border routes; they are not verified carrier service areas.
+- Route estimates use a small built-in connected network plus city-coordinate fallback. Feasible options are ranked deterministically by configurable cost, time, risk and reliability weights. User-provided disruption signals adjust delay/risk and can block a route. Results remain estimates—not navigable routes, live ETAs or carrier quotes.
+- Carrier records, contacts, certifications, capacities, coverage and reliability scores are fictional synthetic fixtures. The carrier agent filters capacity/coverage, calculates a service score and returns an approval-gated candidate; none of the demo contacts are bookable.
 - Risk checks are basic keyword and completeness rules. There is no live customs, sanctions, tariff, or jurisdiction screening.
-- Document validation checks user-entered fields and returns the required-document checklist even when no document data was supplied. It does not read PDFs, scans, images, or OCR.
-- Procurement ranks submitted quotations only, excludes expired quotes and routes disallowed by the analysis, avoids ranking raw amounts across currencies when FX data is absent, and always requires human approval. It never books or contacts a carrier.
+- Document intelligence validates structured fields and can extract explicitly labelled values from supplied plain text before cross-document checks. It does not read PDFs, scans or images and does not perform OCR.
+- Procurement ranks submitted carrier quotations and supplier offers, enforces quantity/certification gates, refuses cross-currency winners without FX data, and always requires human approval. It never books, purchases or contacts a provider.
 - Every agent result carries provenance labels where applicable: `USER_PROVIDED`, `ESTIMATED`, or `SYNTHETIC`. The health endpoint confirms that no live logistics feeds are configured.
 - Offline mode is the default. Gemini is an optional narrative pass over tool output only; it cannot change calculations, call tools, or establish facts. Its model and API key are supplied via environment variables. It is disabled by default, and quota failures degrade to deterministic results.
 - A Google API key alone does not guarantee zero cost: account/project billing, quotas, and free eligibility are controlled by Google. Keep Gemini disabled unless the owner has confirmed the project is constrained to the no-cost tier and has billing disabled. Never commit a key.
@@ -56,11 +56,11 @@ SQLite is configured by `TRADEPILOT_DB_PATH` (default `./data/tradepilot.sqlite3
 Each specialist lives in a separate module under `tradepilot/agents/`, declares its authorized deterministic tools, and returns typed `AgentResult` data through the shared LangGraph workflow state.
 
 1. Logistics Orchestrator — coordinates nodes, tracks bounded retries, combines results and reports partial failures.
-2. Route Optimization — estimates mode options and ranks deadline-feasible routes.
-3. Carrier Research — searches synthetic carrier fixtures and checks capacity.
+2. Route Optimization — applies constraints/disruptions and multi-objective scoring to rank feasible alternatives.
+3. Carrier Research — checks synthetic coverage/capacity/history and scores an approval candidate.
 4. Risk & Compliance — runs local screening rules and flags required human review.
-5. Document Intelligence — validates declared invoice, bill of lading and packing-list fields.
-6. Market & Procurement — ranks user-provided quotations and marks the recommendation for human approval.
+5. Document Intelligence — extracts labelled plain text and validates invoice, bill of lading and packing-list consistency.
+6. Market & Procurement — ranks comparable carrier quotes and qualified supplier offers with human approval.
 
 The graph conditionally selects document validation or an empty-input checklist. The workflow makes no LLM calls in offline mode.
 
