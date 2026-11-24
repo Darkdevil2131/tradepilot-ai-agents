@@ -151,3 +151,48 @@ def test_high_disruption_is_exposed_by_risk_agent():
     codes = {flag.code for flag in result.flags}
     assert "HIGH_DISRUPTION_SIGNAL" in codes
     assert result.disruption_summary[0]["signal_id"] == "PORT-STRIKE"
+
+
+def test_full_langgraph_carries_advanced_agent_results():
+    from tradepilot.agents.orchestrator import LogisticsOrchestrator
+
+    request = shipment(
+        declared_value=1000,
+        declared_value_currency="USD",
+        incoterm="CIF",
+        disruptions=[{
+            "signal_id": "SEA-DELAY",
+            "affected_modes": ["sea"],
+            "severity": .4,
+            "delay_hours": 24,
+            "provenance": "SYNTHETIC",
+        }],
+        required_quantity=10,
+        required_certifications=["ISO-9001"],
+        supplier_offers=[{
+            "supplier_id": "SUP-OK",
+            "name": "Synthetic Qualified Supplier",
+            "unit_price": 12,
+            "currency": "USD",
+            "lead_time_days": 3,
+            "available_quantity": 20,
+            "quality_score": .95,
+            "origin": "Mumbai",
+            "certifications": ["ISO-9001"],
+            "provenance": "SYNTHETIC",
+        }],
+        documents=[
+            {"document_type": "commercial_invoice", "raw_text": "Invoice Number: INV-8\nShipper: Seller\nConsignee: Buyer\nCurrency: USD\nTotal: 1000"},
+            {"document_type": "packing_list", "raw_text": "Package Count: 2"},
+            {"document_type": "bill_of_lading", "raw_text": "Consignee: Buyer"},
+        ],
+    )
+    result = LogisticsOrchestrator().analyze(request)
+    assert set(result.agents) == {
+        "route_optimization", "carrier_research", "risk_compliance",
+        "document_intelligence", "market_procurement", "logistics_orchestrator",
+    }
+    assert result.agents["document_intelligence"].data["valid"] is True
+    assert result.agents["market_procurement"].data["supplier_recommendation"]["supplier_id"] == "SUP-OK"
+    assert result.agents["carrier_research"].data["recommended_carrier"]["requires_human_approval"] is True
+    assert result.agents["risk_compliance"].data["disruption_summary"][0]["signal_id"] == "SEA-DELAY"
