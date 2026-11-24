@@ -1,3 +1,4 @@
+# Decision-quality regression tests for the six-agent workflow.
 import pytest
 from pydantic import ValidationError
 
