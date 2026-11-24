@@ -19,6 +19,18 @@ class ShipmentStore:
             conn.execute("""INSERT OR IGNORE INTO revisions(shipment_id, revision, payload)
                             SELECT shipment_id, 1, payload FROM shipments""")
 
+    def ready(self) -> bool:
+        """Check that the shipment tables can participate in a write transaction."""
+        try:
+            with sqlite3.connect(self.db_path, timeout=1) as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                conn.execute("UPDATE shipments SET payload=payload WHERE 0")
+                conn.execute("SELECT revision, inputs, payload FROM revisions LIMIT 0")
+                conn.rollback()
+        except sqlite3.Error:
+            return False
+        return True
+
     def history(self, shipment_id):
         with self._connect() as conn:
             rows = conn.execute("SELECT revision, inputs, payload FROM revisions WHERE shipment_id=? ORDER BY revision", (shipment_id,)).fetchall()

@@ -30,7 +30,7 @@ app=FastAPI(title="TradePilot AI Multi-Agent Backend",version="1.0.0",descriptio
 async def request_logging(request:Request,call_next):
     start=time.monotonic()
     # Per-process request quota protects the demo API; it is not a global multi-instance limiter.
-    if request.url.path != "/api/v1/health":
+    if request.url.path not in {"/api/v1/health", "/api/v1/ready"}:
         identity=request.client.host if request.client else "unknown"
         now=time.monotonic()
         limit=max(1,int(os.getenv("API_RATE_LIMIT_PER_MINUTE","60")))
@@ -49,22 +49,32 @@ async def request_logging(request:Request,call_next):
         logger.exception("unhandled request error path=%s",request.url.path)
         return JSONResponse(status_code=500,content={"detail":"Internal server error"})
 
+def configured_api_key() -> str | None:
+    key = os.getenv("TRADEPILOT_API_KEY", "").strip()
+    return key if key and key != "replace-with-a-long-random-secret" else None
+
 def require_api_key(authorization:str|None=Header(default=None)):
-    expected=os.getenv("TRADEPILOT_API_KEY")
+    expected=configured_api_key()
     if not expected:
         raise HTTPException(status_code=503,detail="API authentication is not configured")
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401,detail="Missing bearer API key",headers={"WWW-Authenticate":"Bearer"})
     supplied=authorization[7:].strip()
-    if not secrets.compare_digest(supplied,expected):
+    if not secrets.compare_digest(supplied.encode(),expected.encode()):
         raise HTTPException(status_code=401,detail="Invalid API key",headers={"WWW-Authenticate":"Bearer"})
 
 @app.get("/api/v1/health",tags=["health"])
 async def health():
     return {"status":"ok","mode":"offline_deterministic","gemini_enabled":narrator.enabled,"storage":"sqlite_ephemeral_or_local","live_logistics_feeds":False}
 
+@app.get("/api/v1/ready",tags=["health"])
+def readiness():
+    if not configured_api_key() or not store.ready():
+        raise HTTPException(status_code=503, detail="Service is not ready")
+    return {"status": "ready"}
+
 @app.post("/api/v1/shipments/analyze",response_model=ShipmentAnalysis,tags=["shipments"],dependencies=[Depends(require_api_key)])
-async def analyze_shipment(payload:ShipmentRequest):
+def analyze_shipment(payload:ShipmentRequest):
     try:
         analysis=orchestrator.analyze(payload)
         # Narrative generation is optional and cannot alter calculated values or agent outputs.
@@ -77,13 +87,13 @@ async def analyze_shipment(payload:ShipmentRequest):
         raise HTTPException(status_code=500,detail="Shipment analysis could not be completed")
 
 @app.get("/api/v1/shipments/{shipment_id}",response_model=ShipmentAnalysis,tags=["shipments"],dependencies=[Depends(require_api_key)])
-async def get_shipment(shipment_id:str):
+def get_shipment(shipment_id:str):
     result=store.get(shipment_id)
     if not result: raise HTTPException(status_code=404,detail="Shipment analysis not found in this database instance")
     return result
 
 @app.post("/api/v1/documents/validate",response_model=DocumentValidationResponse,tags=["documents"],dependencies=[Depends(require_api_key)])
-async def validate_shipment_documents(payload:DocumentValidationRequest):
+def validate_shipment_documents(payload:DocumentValidationRequest):
     result=validate_documents(payload.shipment)
     return DocumentValidationResponse(shipment_id=payload.shipment.shipment_id,**result)
 

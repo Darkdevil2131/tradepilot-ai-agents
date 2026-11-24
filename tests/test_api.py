@@ -59,3 +59,23 @@ def test_request_quota_returns_429_and_retry_after(client,headers,monkeypatch):
     second=client.post("/api/v1/shipments/analyze",json=BASE,headers=headers)
     assert first.status_code==200 and second.status_code==429
     assert int(second.headers["Retry-After"])>0
+
+
+def test_readiness_checks_auth_storage_and_bypasses_client_quota(client, monkeypatch):
+    from tradepilot.main import store
+
+    monkeypatch.setenv("API_RATE_LIMIT_PER_MINUTE", "1")
+    for _ in range(3):
+        assert client.get("/api/v1/ready").status_code == 200
+    with store._connect() as conn:
+        conn.execute("DROP TABLE revisions")
+    assert client.get("/api/v1/ready").status_code == 503
+    assert client.get("/api/v1/health").status_code == 200
+
+
+def test_example_key_cannot_activate_service(client, monkeypatch):
+    placeholder = "replace-with-a-long-random-secret"
+    monkeypatch.setenv("TRADEPILOT_API_KEY", placeholder)
+    assert client.get("/api/v1/ready").status_code == 503
+    response = client.get("/api/v1/shipments/unknown", headers={"Authorization": "Bearer " + placeholder})
+    assert response.status_code == 503

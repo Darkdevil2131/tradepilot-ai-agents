@@ -75,3 +75,18 @@ Tests cover agent behavior, deterministic tools, workflow and retry behavior, in
 ## Security
 
 Use TLS at the hosting edge. Store API keys as host secrets. Do not log request bodies or credentials. Restrict API access, rotate exposed secrets, and review data retention before production use. Sample records are synthetic; do not send sensitive customer or trade data to a model without approval.
+
+### Deployment checks
+
+Configure a fresh private `TRADEPILOT_API_KEY` before rollout. Both hosting
+configurations probe `GET /api/v1/ready`. This returns 503 when the secret is
+missing or still set to the example value, or when SQLite cannot open a write
+transaction against the expected schema. The public liveness endpoint remains
+`GET /api/v1/health`. Both probes are exempt from client rate limits.
+A successful readiness probe describes the current instance only. Retrieving
+shipments after instance replacement requires the same persistent database.
+
+From the repository root on Linux, run `python -m scripts.check_restart`
+to launch two successive Uvicorn processes on loopback. The check submits
+the synthetic split-shipment example, restarts the server against the same
+temporary database, and verifies the saved response and revision history.

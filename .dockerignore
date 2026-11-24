@@ -1,0 +1,7 @@
+*
+!requirements.txt
+!constraints-docker.txt
+!tradepilot/
+!tradepilot/**
+**/__pycache__/
+**/*.pyc
