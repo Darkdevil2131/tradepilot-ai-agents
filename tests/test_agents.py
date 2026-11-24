@@ -19,6 +19,13 @@ def test_route_agent_rejects_cross_border_road_as_recommendation():
     assert result.no_feasible_route is True
     assert result.routes[0].mode_feasible is False
 
+def test_connected_route_has_leg_evidence():
+    result=RouteOptimizationAgent().run(shipment(origin="Pune", destination="London", allowed_modes=["road", "air", "sea"]))
+    assert result.recommended_route is not None
+    assert result.recommended_route.legs[0]["from"] == "pune"
+    assert result.recommended_route.legs[-1]["to"] == "london"
+    assert result.recommended_route.evidence_ids
+
 def test_carrier_agent_uses_synthetic_records_and_capacity():
     result=CarrierResearchAgent().run(shipment(weight_kg=40000),{"sea","air"})
     assert all(c.capacity_available for c in result.carriers)
@@ -43,6 +50,10 @@ def test_risk_agent_flags_hazardous_cargo_and_missing_incoterm():
 def test_risk_agent_flags_lithium_ion_battery_variants():
     result=RiskComplianceAgent().run(shipment(cargo_description="Li-ion batteries"))
     assert "DANGEROUS_GOODS_REVIEW" in {flag.code for flag in result.flags}
+
+def test_risk_agent_uses_route_feasibility_evidence():
+    result=RiskComplianceAgent().run(shipment(), [{"feasible":False}])
+    assert "NO_FEASIBLE_ROUTE" in {flag.code for flag in result.flags}
 
 def test_document_agent_marks_missing_documents():
     result=DocumentIntelligenceAgent().run(shipment())

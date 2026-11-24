@@ -19,6 +19,20 @@ CITY_COUNTRIES = {
 PORT_CITIES={"mumbai","chennai","kolkata","singapore","dubai","rotterdam","shanghai","london","new york","los angeles"}
 MODE_KMH = {"air": 750.0, "sea": 30.0, "road": 55.0}
 MODE_RATE_USD_TON_KM = {"air": 0.42, "sea": 0.025, "road": 0.09}
+
+# Fictional connected transport network. The route agent only recommends legs
+# present in this fixture, which makes every synthetic recommendation traceable.
+SYNTHETIC_LEGS = (
+    {"id":"SIM-PUNE-BOM-ROAD","from":"pune","to":"mumbai","mode":"road","hours":8,"cost_per_kg":0.09,"capacity_kg":18000,"risk":0.08},
+    {"id":"SIM-DEL-BOM-RAIL","from":"delhi","to":"mumbai","mode":"rail","hours":30,"cost_per_kg":0.06,"capacity_kg":120000,"risk":0.12},
+    {"id":"SIM-BOM-SIN-AIR","from":"mumbai","to":"singapore","mode":"air","hours":18,"cost_per_kg":0.42,"capacity_kg":10000,"risk":0.12},
+    {"id":"SIM-BOM-SIN-SEA","from":"mumbai","to":"singapore","mode":"sea","hours":264,"cost_per_kg":0.025,"capacity_kg":500000,"risk":0.30},
+    {"id":"SIM-DXB-BOM-AIR","from":"dubai","to":"mumbai","mode":"air","hours":48,"cost_per_kg":0.11,"capacity_kg":500,"risk":0.12},
+    {"id":"SIM-DXB-BOM-SEA","from":"dubai","to":"mumbai","mode":"sea","hours":384,"cost_per_kg":0.021,"capacity_kg":10000,"risk":0.28},
+    {"id":"SIM-BOM-LON-AIR","from":"mumbai","to":"london","mode":"air","hours":30,"cost_per_kg":0.49,"capacity_kg":8500,"risk":0.14},
+    {"id":"SIM-BOM-RTM-SEA","from":"mumbai","to":"rotterdam","mode":"sea","hours":504,"cost_per_kg":0.032,"capacity_kg":250000,"risk":0.33},
+    {"id":"SIM-RTM-LON-ROAD","from":"rotterdam","to":"london","mode":"road","hours":22,"cost_per_kg":0.16,"capacity_kg":20000,"risk":0.20},
+)
 DANGEROUS_GOODS_KEYWORDS = (
     "chemical", "flammable", "lithium battery", "lithium batteries",
     "lithium-ion", "lithium ion", "li-ion", "li ion", "battery", "batteries",
@@ -47,7 +61,48 @@ def fits_package(shipment, mode):
         return True
     return all(x <= limit for x, limit in zip(sorted(shipment.dimensions_cm), sorted(ENVELOPES[mode])))
 
+def synthetic_paths(shipment: ShipmentRequest) -> list[dict]:
+    """Enumerate connected, capacity-constrained paths in the synthetic network."""
+    origin, destination = shipment.origin.casefold(), shipment.destination.casefold()
+    paths = []
+    def walk(node, legs, visited):
+        if len(paths) >= 10 or len(legs) >= 4:
+            return
+        if node == destination:
+            paths.append(legs)
+            return
+        for leg in SYNTHETIC_LEGS:
+            if leg["from"] == node and leg["to"] not in visited:
+                walk(leg["to"], legs + [leg], visited | {leg["to"]})
+    walk(origin, [], {origin})
+    options = []
+    for legs in paths:
+        reasons = []
+        for leg in legs:
+            if leg["mode"] not in shipment.allowed_modes:
+                reasons.append("mode:" + leg["mode"])
+            if shipment.weight_kg > leg["capacity_kg"]:
+                reasons.append("capacity:" + leg["id"])
+            if not fits_package(shipment, leg["mode"]):
+                reasons.append("dimensions:" + leg["id"])
+        hours = sum(leg["hours"] for leg in legs)
+        deadline_ok = shipment.deadline is None or hours <= max(0, (shipment.deadline - datetime.now(timezone.utc)).total_seconds() / 3600)
+        options.append({
+            "mode": legs[-1]["mode"], "distance_km": 0, "transit_hours_estimate": round(hours, 1),
+            "cost_estimate_usd": round(sum(shipment.weight_kg * leg["cost_per_kg"] for leg in legs), 2),
+            "mode_feasible": not reasons, "deadline_feasible": deadline_ok, "feasible": not reasons and deadline_ok,
+            "feasibility_reason": "Connected synthetic network path." if not reasons else "; ".join(sorted(set(reasons))),
+            "risk_score_estimate": round(sum(leg["risk"] for leg in legs) / len(legs), 2),
+            "provenance": Provenance.SYNTHETIC.value, "distance_method": "Synthetic connected-leg network.",
+            "legs": [{"id":leg["id"],"from":leg["from"],"to":leg["to"],"mode":leg["mode"],"hours":leg["hours"],"capacity_kg":leg["capacity_kg"]} for leg in legs],
+            "evidence_ids": [leg["id"] for leg in legs], "capacity_kg": min(leg["capacity_kg"] for leg in legs),
+        })
+    return sorted(options, key=lambda item:(not item["feasible"], item["cost_estimate_usd"], item["transit_hours_estimate"]))
+
 def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
+    connected_options = synthetic_paths(shipment)
+    if any(all(leg["mode"] in shipment.allowed_modes for leg in option["legs"]) for option in connected_options):
+        return connected_options
     distance = haversine_km(shipment.origin, shipment.destination)
     results = []
     tonnes = shipment.weight_kg / 1000

@@ -7,7 +7,8 @@ def test_route_tool_estimates_and_ranks_modes():
     s=ShipmentRequest(origin="Mumbai",destination="Singapore",cargo_description="parts",weight_kg=500,allowed_modes=["sea","air"])
     out=calculate_routes(s)
     assert {x["mode"] for x in out}=={"air","sea"}
-    assert all(x["provenance"]=="ESTIMATED" and x["distance_km"]>0 for x in out)
+    assert all(x["provenance"]=="SYNTHETIC" and x["legs"] for x in out)
+    assert all(x["evidence_ids"] for x in out)
 
 def test_route_unknown_city_fails_closed():
     with pytest.raises(ValueError,match="sample city list"):
@@ -19,6 +20,14 @@ def test_cross_border_road_is_not_reported_feasible():
     assert route["mode_feasible"] is False
     assert route["feasible"] is False
     assert "no cross-border road routing" in route["feasibility_reason"]
+
+def test_connected_synthetic_network_rejects_missing_mode_and_capacity():
+    s=ShipmentRequest(origin="Pune",destination="London",cargo_description="parts",weight_kg=9000,allowed_modes=["road","air","sea"])
+    routes=calculate_routes(s)
+    assert routes
+    assert all(route["legs"][0]["from"]=="pune" for route in routes)
+    assert all(route["legs"][-1]["to"]=="london" for route in routes)
+    assert any("capacity:SIM-BOM-LON-AIR" in route["feasibility_reason"] for route in routes)
 
 def test_domestic_road_is_only_sample_eligibility_not_network_route():
     s=ShipmentRequest(origin="Mumbai",destination="Delhi",cargo_description="parts",weight_kg=500,allowed_modes=["road"])

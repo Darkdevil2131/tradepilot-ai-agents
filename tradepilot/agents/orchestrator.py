@@ -83,7 +83,13 @@ class LogisticsOrchestrator:
                 result.leg_plans = source_leg_plans(s["shipment"], comparison["options"])
             return result
         return self._safe(s,"carrier_research",investigate)
-    def _risk(self,s): return self._safe(s,"risk_compliance",lambda:self.risk.run(s["shipment"]))
+    def _risk(self,s):
+        route = s.get("results", {}).get("route_optimization")
+        options = route.data.get("routes") if route and route.status == "completed" else None
+        if route and route.status == "completed" and route.data.get("impact_comparison"):
+            comparison = route.data["impact_comparison"]
+            options = [{"feasible": bool(comparison["options"]), "provenance": "SYNTHETIC", "risk_score_estimate": 0.2}]
+        return self._safe(s,"risk_compliance",lambda:self.risk.run(s["shipment"], options))
     def _documents(self,s): return self._safe(s,"document_intelligence",lambda:self.documents.run(s["shipment"]))
     def _procurement(self,s):
         route=s.get("results",{}).get("route_optimization")
@@ -132,12 +138,21 @@ class LogisticsOrchestrator:
             review.append("Supply largest package dimensions to verify service fit.")
         candidate = commercial.get("sourced_plan") or commercial.get("recommendation")
         gates = []
+        route_data = results["route_optimization"].data
+        impact_comparison = route_data.get("impact_comparison") or {}
+        has_feasible_route = bool(
+            [option for option in route_data.get("routes", []) if option.get("feasible")]
+            or impact_comparison.get("options", [])
+        )
         if results["route_optimization"].status != "completed":
             gates.append(DecisionGate(gate="route_feasibility", status="blocked", reason="Route analysis failed.", evidence_path="/agents/route_optimization"))
-        elif candidate is None:
+        elif not has_feasible_route:
+            gates.append(DecisionGate(gate="route_feasibility", status="blocked", reason="No route satisfies the configured shipment constraints.", evidence_path="/agents/route_optimization/data"))
+        else:
+            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason="At least one route passed the configured route and capacity checks.", evidence_path="/agents/route_optimization/data"))
+        if candidate is None:
             gates.append(DecisionGate(gate="commercial_offer", status="blocked", reason="No eligible provider-backed plan or quote is available.", evidence_path="/agents/market_procurement/data"))
         else:
-            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason="The selected candidate passed the configured route and capacity checks.", evidence_path="/agents/route_optimization/data"))
             gates.append(DecisionGate(gate="commercial_offer", status="passed", reason="The selected candidate has eligible synthetic tariff evidence or a matched submitted quote.", evidence_path="/agents/market_procurement/data"))
         if not documents.get("valid", False):
             gates.append(DecisionGate(gate="documents", status="blocked", reason="Required documents are missing or contain unresolved inconsistencies.", evidence_path="/agents/document_intelligence/data"))

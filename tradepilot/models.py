@@ -124,8 +124,11 @@ class RouteOption(StrictModel):
     feasible: bool
     feasibility_reason: str
     risk_score_estimate: float = Field(ge=0,le=1)
-    provenance: Literal["ESTIMATED"]
+    provenance: Literal["ESTIMATED", "SYNTHETIC"]
     distance_method: str
+    legs: list[dict] = Field(default_factory=list)
+    evidence_ids: list[str] = Field(default_factory=list)
+    capacity_kg: float | None = Field(default=None, ge=0)
 
 class RouteOptimizationOutput(StrictModel):
     impact_comparison: dict | None = None
