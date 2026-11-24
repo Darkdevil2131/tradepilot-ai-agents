@@ -1,0 +1,58 @@
+{
+  "shipment_id": "INTELLIGENCE-001",
+  "origin": "Mumbai",
+  "destination": "Singapore",
+  "cargo_description": "machine parts",
+  "weight_kg": 1000,
+  "declared_value": 1000,
+  "declared_value_currency": "USD",
+  "allowed_modes": ["air", "sea"],
+  "incoterm": "CIF",
+  "optimization": {
+    "cost_weight": 0.35,
+    "time_weight": 0.35,
+    "risk_weight": 0.20,
+    "reliability_weight": 0.10
+  },
+  "disruptions": [
+    {
+      "signal_id": "DEMO-SEA-DELAY",
+      "affected_modes": ["sea"],
+      "affected_locations": ["Singapore"],
+      "severity": 0.4,
+      "delay_hours": 24,
+      "provenance": "SYNTHETIC"
+    }
+  ],
+  "required_quantity": 50,
+  "required_certifications": ["ISO-9001"],
+  "supplier_offers": [
+    {
+      "supplier_id": "SYNTH-SUP-01",
+      "name": "Synthetic Supplier One",
+      "unit_price": 10,
+      "currency": "USD",
+      "lead_time_days": 5,
+      "available_quantity": 100,
+      "quality_score": 0.9,
+      "origin": "Mumbai",
+      "contact_email": "supplier@demo.invalid",
+      "certifications": ["ISO-9001"],
+      "provenance": "SYNTHETIC"
+    }
+  ],
+  "documents": [
+    {
+      "document_type": "commercial_invoice",
+      "raw_text": "Invoice Number: INV-7\nShipper: Seller Ltd\nConsignee: Buyer Ltd\nCurrency: USD\nTotal: 1000"
+    },
+    {
+      "document_type": "packing_list",
+      "raw_text": "Package Count: 4"
+    },
+    {
+      "document_type": "bill_of_lading",
+      "raw_text": "Consignee: Buyer Ltd"
+    }
+  ]
+}
