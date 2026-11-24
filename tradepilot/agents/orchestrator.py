@@ -84,12 +84,16 @@ class LogisticsOrchestrator:
             results["document_intelligence"]=AgentResult(agent="document_intelligence",status="failed",warnings=["Document checklist did not produce a result."])
         # The coordinator is represented explicitly in the API result.
         results["logistics_orchestrator"]=AgentResult(agent="logistics_orchestrator",status="partial" if state.get("errors") else "completed",provenance=[Provenance.USER_PROVIDED],data={"workflow":"LangGraph StateGraph","bounded_attempts":self.max_attempts,"errors":state.get("errors",[]),"retry_counts":state.get("retry_counts",{})})
-        required=["route_optimization","carrier_research","risk_compliance","market_procurement"]
+        required=["route_optimization","carrier_research","risk_compliance","market_procurement","document_intelligence"]
         failed=any(results[k].status=="failed" for k in required)
         prov={p for result in results.values() for p in result.provenance}
         # Mark synthetic static carrier fixtures accurately.
         if results.get("carrier_research") and results["carrier_research"].status=="completed": prov.add(Provenance.SYNTHETIC)
         if results.get("document_intelligence") and results["document_intelligence"].status=="completed": prov.add(Provenance.USER_PROVIDED)
         summary="Analysis completed using deterministic offline tools. No live carrier, route, customs, or market feeds were queried."
+        if shipment.impact_scenario:
+            prov.add(Provenance.SYNTHETIC)
+            summary = ("See impact_comparison for synthetic connected paths ranked by freight plus stoppage loss. "
+                       "The comparison has no linked carrier offers. Carrier and procurement shortlists are empty.")
         if failed: summary="Analysis is partial because one or more agents failed; inspect each agent status and warning."
         return ShipmentAnalysis(shipment_id=sid,status="partial" if failed else "completed",created_at=state["created_at"],persistence="sqlite_ephemeral_or_local",data_provenance=sorted(prov,key=lambda x:x.value),agents=results,summary=summary)

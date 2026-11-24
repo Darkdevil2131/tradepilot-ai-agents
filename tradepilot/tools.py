@@ -100,3 +100,62 @@ def compare_quotes(quotes: list[Quote], feasible_modes: set[str]) -> dict:
     elif ranked:
         warning="Quotes use multiple currencies; no FX conversion is configured, so no single cheapest recommendation is made. Compare amounts within each currency and obtain human review."
     return {"quotes_received":len(quotes),"eligible_quotes":len(eligible),"ranked_quotes":[{"carrier_id":q.carrier_id,"mode":q.mode,"amount":q.amount,"currency":q.currency,"valid_until":q.valid_until.isoformat() if q.valid_until else None,"provenance":q.provenance.value} for q in ranked],"recommendation":recommendation,"recommendation_warning":warning,"note":"Quote ranking compares user-provided quotes only; no FX conversion, market-price lookup, or booking is performed."}
+
+
+def impact_options(shipment: ShipmentRequest) -> dict:
+    """Evaluate explicitly connected synthetic paths for the Dubai–Mumbai scenario."""
+    import itertools
+    from decimal import Decimal
+
+    scenario = shipment.impact_scenario
+    weight = Decimal(str(shipment.weight_kg))
+    critical = Decimal(str(scenario.critical_weight_kg))
+    # id, origin, destination, mode, duration in days, INR per kg, capacity kg
+    edges = [
+        ("pickup", "Dubai warehouse", "Dubai transfer hub", "road", .5, 5, 10000),
+        ("air", "Dubai transfer hub", "Mumbai transfer hub", "air", 2, 410, 500),
+        ("ocean", "Dubai transfer hub", "Mumbai transfer hub", "sea", 16, 80, 10000),
+        ("delivery", "Mumbai transfer hub", "Mumbai warehouse", "road", .5, 5, 10000),
+    ]
+    paths = [(edges[0], main, edges[3]) for main in edges[1:3]]
+    # Each ordered pair assigns the critical and remaining portions respectively.
+    options, rejected = [], []
+    for first, second in itertools.product(paths, repeat=2):
+        if critical == weight and first != second:
+            continue
+        loads = [(first, weight)] if first == second else [(first, critical), (second, weight-critical)]
+        quantities = {}
+        portions = []
+        reasons = set()
+        freight = Decimal(0)
+        for path, mass in loads:
+            legs = []
+            for leg, origin, destination, mode, days, rate, capacity in path:
+                quantities[leg] = quantities.get(leg, Decimal(0)) + mass
+                if quantities[leg] > capacity:
+                    reasons.add(f"capacity:{leg}")
+                if leg in scenario.closed_leg_ids:
+                    reasons.add(f"closed:{leg}")
+                if mode not in shipment.allowed_modes:
+                    reasons.add(f"mode:{mode}")
+                charge = mass * rate * Decimal(str(scenario.freight_multiplier))
+                freight += charge
+                legs.append(dict(id=leg,origin=origin,destination=destination,mode=mode,freight_inr=float(charge)))
+            eta = sum(edge[4] for edge in path)
+            if shipment.deadline and eta * 86400 > (shipment.deadline-datetime.now(timezone.utc)).total_seconds():
+                reasons.add("hard_deadline")
+            portions.append(dict(weight_kg=float(mass), arrival_days=eta, legs=legs))
+        name = "/".join(path[1][0] for path, _ in loads)
+        if contains_dangerous_goods_keyword(shipment.cargo_description):
+            reasons.add("cargo_acceptance_requires_review")
+        if reasons:
+            rejected.append(dict(option=name,reasons=sorted(reasons)))
+            continue
+        delay = max(0, portions[0]["arrival_days"]-scenario.target_days)*scenario.daily_stoppage_inr
+        options.append(dict(option=name,portions=portions,freight_inr=round(float(freight),2),
+                            delay_loss_inr=round(delay,2),total_impact_inr=round(float(freight)+delay,2)))
+    options.sort(key=lambda o:(o["total_impact_inr"],len(o["portions"]),o["option"]))
+    return dict(provenance="SYNTHETIC", options=options,rejected=rejected,
+                preferred=options[0]["option"] if options else None,
+                assumptions=["Critical cargo arrives with the first portion and ends the modeled stoppage.",
+                             "Rates, hubs, capacities and durations are synthetic. Taxes and insurance excluded."])

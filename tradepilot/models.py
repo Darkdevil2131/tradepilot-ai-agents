@@ -28,7 +28,15 @@ class ShippingDocument(StrictModel):
     fields: dict[str, str | float | int | bool | None] = Field(default_factory=dict)
     provenance: Provenance = Provenance.USER_PROVIDED
 
+class ImpactScenario(StrictModel):
+    critical_weight_kg: float = Field(gt=0)
+    target_days: float = Field(gt=0, le=365)
+    daily_stoppage_inr: float = Field(ge=0, le=1e10)
+    closed_leg_ids: list[Literal["pickup", "air", "ocean", "delivery"]] = Field(default_factory=list)
+    freight_multiplier: float = Field(default=1, gt=0, le=10)
+
 class ShipmentRequest(StrictModel):
+    impact_scenario: ImpactScenario | None = None
     shipment_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     origin: str = Field(min_length=2, max_length=100)
     destination: str = Field(min_length=2, max_length=100)
@@ -56,6 +64,11 @@ class ShipmentRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_distinct_and_deadline(self):
+        if self.impact_scenario:
+            if (self.origin.casefold(), self.destination.casefold()) != ("dubai", "mumbai"):
+                raise ValueError("The impact scenario currently covers Dubai to Mumbai only")
+            if self.impact_scenario.critical_weight_kg > self.weight_kg:
+                raise ValueError("Critical weight exceeds shipment weight")
         if self.origin.casefold() == self.destination.casefold():
             raise ValueError("origin and destination must differ")
         if len(set(self.allowed_modes)) != len(self.allowed_modes):
@@ -105,6 +118,7 @@ class RouteOption(StrictModel):
     distance_method: str
 
 class RouteOptimizationOutput(StrictModel):
+    impact_comparison: dict | None = None
     routes: list[RouteOption]
     recommended_route: RouteOption | None
     no_feasible_route: bool

@@ -1,0 +1,8 @@
+{
+  "origin": "Dubai",
+  "destination": "Mumbai",
+  "cargo_description": "machine parts",
+  "weight_kg": 500,
+  "allowed_modes": ["road", "air", "sea"],
+  "impact_scenario": {"critical_weight_kg": 100, "target_days": 5, "daily_stoppage_inr": 80000}
+}
