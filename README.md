@@ -7,8 +7,9 @@ A backend prototype for shipment decision support. It uses a LangGraph `StateGra
 - Route estimates use a small built-in connected network plus city-coordinate fallback. Feasible options are ranked deterministically by configurable cost, time, risk and reliability weights. User-provided disruption signals adjust delay/risk and can block a route. Results remain estimates—not navigable routes, live ETAs or carrier quotes.
 - Carrier records, contacts, certifications, capacities, coverage and reliability scores are fictional synthetic fixtures. The carrier agent filters capacity/coverage, calculates a service score and returns an approval-gated candidate; none of the demo contacts are bookable.
 - Risk checks are basic keyword and completeness rules. There is no live customs, sanctions, tariff, or jurisdiction screening.
-- Document intelligence validates structured fields and can extract explicitly labelled values from supplied plain text before cross-document checks. It does not read PDFs, scans or images and does not perform OCR.
+- Document intelligence validates structured fields, extracts labelled text, accepts PDF/PNG/JPEG/TIFF uploads, extracts PDF tables, and uses local Tesseract OCR for images. It records SHA-256 integrity hashes and PDF signature fields. Authenticity remains `not_verified` unless a future trusted cryptographic-verification adapter is configured.
 - Procurement ranks submitted carrier quotations and supplier offers, enforces quantity/certification gates, refuses cross-currency winners without FX data, and always requires human approval. It never books, purchases or contacts a provider.
+- The commercial API manages RFQ drafts, internal delivery, carrier responses, human approvals, dry-run booking intents, draft purchase orders and tracking events. SMTP is an explicit opt-in adapter; external booking and ERP posting fail closed.
 - Every agent result carries provenance labels where applicable: `USER_PROVIDED`, `ESTIMATED`, or `SYNTHETIC`. The health endpoint confirms that no live logistics feeds are configured.
 - Offline mode is the default. Gemini is an optional narrative pass over tool output only; it cannot change calculations, call tools, or establish facts. Its model and API key are supplied via environment variables. It is disabled by default, and quota failures degrade to deterministic results.
 - A Google API key alone does not guarantee zero cost: account/project billing, quotas, and free eligibility are controlled by Google. Keep Gemini disabled unless the owner has confirmed the project is constrained to the no-cost tier and has billing disabled. Never commit a key.
@@ -42,6 +43,10 @@ Protected API calls use `Authorization: Bearer <TRADEPILOT_API_KEY>`. Health is 
 - `POST /api/v1/shipments/analyze` — deterministic offline analysis, SQLite save, optional Gemini narrative.
 - `GET /api/v1/shipments/{shipment_id}` — retrieves an analysis saved in this SQLite database.
 - `POST /api/v1/documents/validate` — validates user-supplied document fields.
+- `POST /api/v1/documents/extract` and `/process` — synchronous or background PDF/image processing.
+- `/api/v1/rfqs`, `/approvals`, `/bookings`, `/purchase-orders` — approval-gated commercial workflow.
+- `POST /api/v1/evaluations/decision-quality` — historical/synthetic cost, ETA, agreement and risk-calibration metrics.
+- `GET /api/v1/audit`, `/metrics` and `POST /api/v1/admin/backups` — operational controls.
 - `GET /api/v1/health`
 - `/openapi.json`, `/docs`
 
@@ -50,6 +55,8 @@ See [`API_INTEGRATION_GUIDE.md`](API_INTEGRATION_GUIDE.md) and [`examples/`](exa
 ## Persistence and hosting
 
 SQLite is configured by `TRADEPILOT_DB_PATH` (default `./data/tradepilot.sqlite3`). On a machine with durable local storage, retrieval survives process restarts. A free Render instance does not provide durable storage for this file by default; records may disappear on restart or deploy. The included `render.yaml` is a deployment configuration, not proof that an account is eligible or that service is currently free. Check current terms and estimate cost before provisioning; never enable billing to proceed. Deployment was not performed as part of this source build.
+
+Set `TRADEPILOT_DATABASE_URL` for PostgreSQL-backed shipment, workflow, job and audit persistence. Set `REDIS_URL` for a multi-instance rate limiter. Local SQLite and the in-process limiter remain safe development fallbacks and are labelled in `/api/v1/health`. See [`PRODUCTION_RUNBOOK.md`](PRODUCTION_RUNBOOK.md) and [`SECURITY.md`](SECURITY.md).
 
 ## Agents and workflow
 

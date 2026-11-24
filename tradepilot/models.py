@@ -133,7 +133,7 @@ class ShipmentAnalysis(StrictModel):
     shipment_id: str
     status: Literal["completed", "partial"]
     created_at: datetime
-    persistence: Literal["sqlite_ephemeral_or_local"]
+    persistence: Literal["sqlite_ephemeral_or_local", "postgresql_durable"]
     data_provenance: list[Provenance]
     agents: dict[str, AgentResult]
     summary: str

@@ -27,3 +27,16 @@ jobs:
           GEMINI_ENABLED: "false"
           TRADEPILOT_API_KEY: test-api-key
         run: pytest -q
+      - name: Security dependency and code scan
+        run: |
+          pip install pip-audit==2.9.0 bandit==1.8.0
+          pip-audit -r requirements.txt
+          bandit -q -r tradepilot -ll
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build production image
+        run: docker build -t tradepilot-ci .
