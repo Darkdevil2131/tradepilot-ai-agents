@@ -4,10 +4,10 @@ from pathlib import Path
 from ..models import ShipmentRequest, CarrierResearchOutput
 # Synthetic fixture data: deliberately fictional carriers and scores.
 CARRIERS=[
- {"carrier_id":"DEMO-RAIL-01","name":"Demo Rail Freight","mode":"rail","regions":["india"],"capacity_kg":120000,"provenance":"SYNTHETIC"},
- {"carrier_id":"DEMO-AIR-01","name":"Demo Air Freight One","mode":"air","regions":["india","global"],"capacity_kg":10000,"provenance":"SYNTHETIC"},
- {"carrier_id":"DEMO-SEA-01","name":"Demo Ocean Line One","mode":"sea","regions":["india","global"],"capacity_kg":500000,"provenance":"SYNTHETIC"},
- {"carrier_id":"DEMO-ROAD-01","name":"Demo Road Freight One","mode":"road","regions":["india"],"capacity_kg":30000,"provenance":"SYNTHETIC"},
+ {"carrier_id":"DEMO-RAIL-01","name":"Demo Rail Freight","mode":"rail","regions":["india"],"capacity_kg":120000,"provenance":"SYNTHETIC","contact":{"email":"rail@demo.invalid"},"certifications":["ISO-9001"]},
+ {"carrier_id":"DEMO-AIR-01","name":"Demo Air Freight One","mode":"air","regions":["india","global"],"capacity_kg":10000,"provenance":"SYNTHETIC","contact":{"email":"air@demo.invalid"},"certifications":["IATA-DEMO","ISO-9001"]},
+ {"carrier_id":"DEMO-SEA-01","name":"Demo Ocean Line One","mode":"sea","regions":["india","global"],"capacity_kg":500000,"provenance":"SYNTHETIC","contact":{"email":"sea@demo.invalid"},"certifications":["ISO-9001"]},
+ {"carrier_id":"DEMO-ROAD-01","name":"Demo Road Freight One","mode":"road","regions":["india"],"capacity_kg":30000,"provenance":"SYNTHETIC","contact":{"email":"road@demo.invalid"},"certifications":["ISO-9001"]},
 ]
 INDIA_CITIES={"mumbai","delhi","new delhi","chennai","kolkata","bengaluru","pune","hyderabad"}
 @lru_cache(maxsize=1)
@@ -36,7 +36,25 @@ class CarrierResearchAgent:
                        reliability_score=on_time / total if total else None,
                        history_reference="fixtures/history.csv#" + "/".join(key))
         eligible=[c for c in rows if c["capacity_available"] and c["coverage_match"]]
-        return CarrierResearchOutput(carriers=sorted(eligible,key=lambda c:(-(c["reliability_score"] if c["reliability_score"] is not None else -1),c["carrier_id"])),excluded_capacity=sum(not c["capacity_available"] for c in rows),excluded_coverage=sum(not c["coverage_match"] for c in rows),provenance="SYNTHETIC",notice="Carrier identities, coverage, capacity, and reliability are synthetic demo fixtures. Coverage is checked against the sample origin/destination region labels.")
+        for carrier in eligible:
+            reliability = carrier["reliability_score"] if carrier["reliability_score"] is not None else 0.5
+            headroom = max(0.0, min(1.0, 1.0 - shipment.weight_kg / carrier["capacity_kg"]))
+            carrier["service_score"] = round(0.8 * reliability + 0.2 * headroom, 6)
+        eligible = sorted(eligible, key=lambda c:(-c["service_score"], c["carrier_id"]))
+        recommended = None
+        if eligible:
+            best = eligible[0]
+            recommended = {
+                "carrier_id": best["carrier_id"],
+                "name": best["name"],
+                "mode": best["mode"],
+                "service_score": best["service_score"],
+                "reliability_score": best["reliability_score"],
+                "contact": best["contact"],
+                "requires_human_approval": True,
+                "provenance": "SYNTHETIC",
+            }
+        return CarrierResearchOutput(carriers=eligible,recommended_carrier=recommended,excluded_capacity=sum(not c["capacity_available"] for c in rows),excluded_coverage=sum(not c["coverage_match"] for c in rows),provenance="SYNTHETIC",notice="Carrier identities, contacts, certifications, coverage, capacity, and reliability are synthetic demo fixtures. They are decision-test data, not real booking contacts.")
 
 
 def source_leg_plans(shipment, options):
