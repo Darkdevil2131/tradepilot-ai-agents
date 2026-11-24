@@ -127,3 +127,15 @@ currency. Mixed currencies require a common valuation.
 Procurement returns each eligible quote's `includes_insurance` flag. When
 eligible quotes have different coverage terms, the response retains their
 prices and asks for comparable offers before recommending a carrier.
+
+
+## Advanced agent decision inputs
+
+The shipment request accepts these optional controls:
+
+- `optimization`: non-negative `cost_weight`, `time_weight`, `risk_weight` and `reliability_weight`. At least one must be positive; the route agent normalizes them.
+- `disruptions`: user-provided signals with affected modes/locations, severity, delay and provenance. Severity at or above 0.95 blocks a matched route; lower severity adjusts its time and risk.
+- `supplier_offers`: price, lead time, capacity, quality, certifications, contact and provenance. Set `required_quantity` and `required_certifications` to enforce eligibility.
+- `documents[].raw_text`: plain text containing explicit labels such as `Invoice Number:`, `Consignee:`, `Currency:`, `Total:` or `Package Count:`. User-supplied `fields` override extracted values.
+
+See `examples/intelligent_shipment.json`. Scores are deterministic comparisons within the submitted candidate set. A recommendation is not a prediction, live market fact, purchase, booking or compliance clearance.
