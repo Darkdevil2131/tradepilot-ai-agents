@@ -9,6 +9,7 @@ from .carrier import CarrierResearchAgent, source_leg_plans
 from .risk import RiskComplianceAgent
 from .documents import DocumentIntelligenceAgent
 from .procurement import MarketProcurementAgent
+from .explanation import explain_decision
 
 class WorkflowState(TypedDict, total=False):
     shipment: ShipmentRequest
@@ -135,6 +136,8 @@ class LogisticsOrchestrator:
             "review_items": review,
             "requires_human_approval": True,
         }
+        explanation = explain_decision(shipment, results, results["logistics_orchestrator"].data["decision"])
+        results["logistics_orchestrator"].data["explanation"] = explanation.model_dump()
         prov={p for result in results.values() for p in result.provenance}
         # Mark synthetic static carrier fixtures accurately.
         if results.get("carrier_research") and results["carrier_research"].status=="completed": prov.add(Provenance.SYNTHETIC)
@@ -145,4 +148,5 @@ class LogisticsOrchestrator:
             summary = ("See impact_comparison for synthetic connected paths ranked by freight plus stoppage loss. "
                        "Carrier leg_plans and procurement sourced_plan identify synthetic tariffs and outstanding quotations.")
         if failed: summary="Analysis is partial because one or more agents failed; inspect each agent status and warning."
+        summary = explanation.conclusion
         return ShipmentAnalysis(shipment_id=sid,status="partial" if failed else "completed",created_at=state["created_at"],persistence="sqlite_ephemeral_or_local",data_provenance=sorted(prov,key=lambda x:x.value),agents=results,summary=summary)

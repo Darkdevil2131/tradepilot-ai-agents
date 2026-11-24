@@ -105,3 +105,14 @@ Optional `dimensions_cm` is a three-number bounding box for the largest
 package. The fixture allows rotation across the three axes and checks each
 service envelope. Missing dimensions leave fit unverified. Request rail with
 `allowed_modes: ["rail"]` on the synthetic Mumbai–Delhi corridor.
+
+## Strategic explanation
+
+Read `agents.logistics_orchestrator.data.explanation` for the objective,
+conditional conclusion, alternative cost comparisons, evidence paths,
+pairwise break-even thresholds, assumptions and next actions.
+The top-level summary now uses this calculated conclusion.
+Sensitivity thresholds hold freight, topology, capacity and critical weight
+fixed. They compare pairs of feasible options and do not imply uncertainty
+estimates or prediction accuracy. All fixture-derived comparisons are synthetic.
+The explanation is part of the orchestrator and requires no model call.
