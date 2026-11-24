@@ -1,0 +1,17 @@
+{
+  "shipment_id": "DEMO-001",
+  "origin": "Mumbai",
+  "destination": "Singapore",
+  "cargo_description": "machine parts",
+  "weight_kg": 1200,
+  "volume_m3": 4.5,
+  "declared_value": 25000,
+  "deadline": "2027-01-10T12:00:00Z",
+  "allowed_modes": ["air", "sea"],
+  "incoterm": "CIF",
+  "quotes": [
+    {"carrier_id": "USER-QUOTE-1", "mode": "sea", "amount": 950, "currency": "USD", "provenance": "USER_PROVIDED"},
+    {"carrier_id": "USER-QUOTE-2", "mode": "air", "amount": 1850, "currency": "USD", "provenance": "USER_PROVIDED"}
+  ],
+  "documents": []
+}

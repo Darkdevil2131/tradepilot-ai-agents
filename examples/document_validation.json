@@ -1,0 +1,16 @@
+{
+  "shipment": {
+    "shipment_id": "DEMO-DOC-001",
+    "origin": "Mumbai",
+    "destination": "Singapore",
+    "cargo_description": "machine parts",
+    "weight_kg": 1200,
+    "declared_value": 25000,
+    "incoterm": "CIF",
+    "documents": [
+      {"document_type":"commercial_invoice","fields":{"invoice_number":"INV-100","shipper":"Example Exporter","consignee":"Example Buyer","currency":"USD","total":25000}},
+      {"document_type":"packing_list","fields":{"package_count":4,"gross_weight_kg":1200}},
+      {"document_type":"bill_of_lading","fields":{"consignee":"Example Buyer","bill_number":"BL-100"}}
+    ]
+  }
+}

@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: tradepilot-ai-agents
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/v1/health
+    envVars:
+      - key: TRADEPILOT_API_KEY
+        sync: false
+      - key: TRADEPILOT_DB_PATH
+        value: /tmp/tradepilot.sqlite3
+      - key: GEMINI_ENABLED
+        value: "false"
