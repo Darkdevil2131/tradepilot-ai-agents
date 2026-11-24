@@ -17,7 +17,8 @@ def test_analysis_and_persistent_retrieval_within_configured_sqlite(client,heade
     assert response.status_code==200,response.text
     body=response.json()
     assert set(["route_optimization","carrier_research","risk_compliance","document_intelligence","market_procurement","logistics_orchestrator"]) <= set(body["agents"])
-    assert body["agents"]["document_intelligence"]["status"]=="skipped"
+    assert body["agents"]["document_intelligence"]["status"]=="completed"
+    assert "commercial_invoice" in body["agents"]["document_intelligence"]["data"]["missing_document_types"]
     get=client.get("/api/v1/shipments/TEST-100",headers=headers)
     assert get.status_code==200 and get.json()["shipment_id"]=="TEST-100"
 

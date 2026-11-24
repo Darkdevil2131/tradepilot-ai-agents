@@ -13,7 +13,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/shipments/analyze \
   --data @examples/analyze_shipment.json
 ```
 
-The response includes an `agents` object with per-agent status, results and provenance. `route_optimization` values are estimates; `carrier_research` records and coverage are synthetic; quotes are user-provided; the analysis is not a booking. Quotes with different currencies are not compared by raw amount because no FX conversion is configured. `document_intelligence` is marked skipped when no documents are supplied.
+The response includes an `agents` object with per-agent status, results and provenance. `route_optimization` values are estimates; `carrier_research` records and coverage are synthetic; quotes are user-provided; the analysis is not a booking. Quotes with different currencies are not compared by raw amount because no FX conversion is configured. When no document data is supplied, `document_intelligence` runs against empty input and returns the baseline required-document checklist.
 
 ## Retrieve saved analysis
 
@@ -55,7 +55,7 @@ The specific route estimates are computed for each request. This abbreviated exa
     "route_optimization": {"agent": "route_optimization", "status": "completed", "provenance": ["ESTIMATED"], "data": {"routes": "computed estimates"}, "warnings": []},
     "carrier_research": {"agent": "carrier_research", "status": "completed", "provenance": ["SYNTHETIC"], "data": {"carriers": "synthetic fixtures"}, "warnings": []},
     "risk_compliance": {"agent": "risk_compliance", "status": "completed", "provenance": ["USER_PROVIDED"], "data": {"live_screening": false}, "warnings": []},
-    "document_intelligence": {"agent": "document_intelligence", "status": "skipped", "provenance": [], "data": {}, "warnings": ["No documents supplied."]},
+    "document_intelligence": {"agent": "document_intelligence", "status": "completed", "provenance": ["USER_PROVIDED"], "data": {"valid": false, "documents_checked": 0, "missing_document_types": ["commercial_invoice", "packing_list", "bill_of_lading"]}, "warnings": []},
     "market_procurement": {"agent": "market_procurement", "status": "completed", "provenance": ["ESTIMATED"], "data": {"recommendation": "computed only from eligible submitted quotes"}, "warnings": []},
     "logistics_orchestrator": {"agent": "logistics_orchestrator", "status": "completed", "provenance": ["USER_PROVIDED"], "data": {"workflow": "LangGraph StateGraph", "bounded_attempts": 2}, "warnings": []}
   },

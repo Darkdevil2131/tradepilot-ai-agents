@@ -28,18 +28,20 @@ class LogisticsOrchestrator:
         builder.add_node("carrier_research",self._carrier)
         builder.add_node("risk_compliance",self._risk)
         builder.add_node("document_intelligence",self._documents)
+        builder.add_node("document_checklist",self._documents)
         builder.add_node("market_procurement",self._procurement)
         builder.add_node("finalize",self._finalize)
         builder.add_edge(START,"route_optimization")
         builder.add_edge("route_optimization","carrier_research")
         builder.add_edge("carrier_research","risk_compliance")
-        builder.add_conditional_edges("risk_compliance",self._document_branch,{"documents":"document_intelligence","skip":"market_procurement"})
+        builder.add_conditional_edges("risk_compliance",self._document_branch,{"documents":"document_intelligence","checklist":"document_checklist"})
         builder.add_edge("document_intelligence","market_procurement")
+        builder.add_edge("document_checklist","market_procurement")
         builder.add_edge("market_procurement","finalize")
         builder.add_edge("finalize",END)
         self.graph=builder.compile()
     @staticmethod
-    def _document_branch(state:WorkflowState)->str: return "documents" if state["shipment"].documents else "skip"
+    def _document_branch(state:WorkflowState)->str: return "documents" if state["shipment"].documents else "checklist"
     def _safe(self,state:WorkflowState,key:str,fn):
         results=dict(state.get("results",{})); errors=list(state.get("errors",[])); retries=dict(state.get("retry_counts",{}))
         last=None
@@ -78,7 +80,8 @@ class LogisticsOrchestrator:
         sid=shipment.shipment_id or f"TP-{uuid4().hex[:12].upper()}"
         state=self.graph.invoke({"shipment":shipment,"shipment_id":sid,"results":{},"errors":[],"retry_counts":{},"created_at":datetime.now(timezone.utc)})
         results=state.get("results",{})
-        if "document_intelligence" not in results: results["document_intelligence"]=AgentResult(agent="document_intelligence",status="skipped",warnings=["No documents supplied."])
+        if "document_intelligence" not in results:
+            results["document_intelligence"]=AgentResult(agent="document_intelligence",status="failed",warnings=["Document checklist did not produce a result."])
         # The coordinator is represented explicitly in the API result.
         results["logistics_orchestrator"]=AgentResult(agent="logistics_orchestrator",status="partial" if state.get("errors") else "completed",provenance=[Provenance.USER_PROVIDED],data={"workflow":"LangGraph StateGraph","bounded_attempts":self.max_attempts,"errors":state.get("errors",[]),"retry_counts":state.get("retry_counts",{})})
         required=["route_optimization","carrier_research","risk_compliance","market_procurement"]

@@ -7,7 +7,7 @@ A backend prototype for shipment decision support. It uses a LangGraph `StateGra
 - Route estimates use a small built-in city-coordinate table, straight-line distance, and fixed demo factors. Mode eligibility uses a small country/port sample table; it is not a verified transport connection. They are not navigable routes, live ETAs, or carrier quotes.
 - Carrier records, capacities, coverage, and reliability scores are fictional synthetic fixtures. Demo coverage checks distinguish sample domestic India city pairs from cross-border routes; they are not verified carrier service areas.
 - Risk checks are basic keyword and completeness rules. There is no live customs, sanctions, tariff, or jurisdiction screening.
-- Document validation checks user-entered fields. It does not read PDFs, scans, images, or OCR.
+- Document validation checks user-entered fields and returns the required-document checklist even when no document data was supplied. It does not read PDFs, scans, images, or OCR.
 - Procurement ranks submitted quotations only, excludes expired quotes and routes disallowed by the analysis, avoids ranking raw amounts across currencies when FX data is absent, and always requires human approval. It never books or contacts a carrier.
 - Every agent result carries provenance labels where applicable: `USER_PROVIDED`, `ESTIMATED`, or `SYNTHETIC`. The health endpoint confirms that no live logistics feeds are configured.
 - Offline mode is the default. Gemini is an optional narrative pass over tool output only; it cannot change calculations, call tools, or establish facts. Its model and API key are supplied via environment variables. It is disabled by default, and quota failures degrade to deterministic results.
@@ -62,7 +62,7 @@ Each specialist lives in a separate module under `tradepilot/agents/`, declares 
 5. Document Intelligence — validates declared invoice, bill of lading and packing-list fields.
 6. Market & Procurement — ranks user-provided quotations and marks the recommendation for human approval.
 
-The graph conditionally skips document validation when no documents are supplied. The workflow makes no LLM calls in offline mode.
+The graph conditionally selects document validation or an empty-input checklist. The workflow makes no LLM calls in offline mode.
 
 ## Verify
 

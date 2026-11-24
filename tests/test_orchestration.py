@@ -3,11 +3,12 @@ from tradepilot.agents.orchestrator import LogisticsOrchestrator
 
 def make_shipment(): return ShipmentRequest(origin="Mumbai",destination="Singapore",cargo_description="parts",weight_kg=300,allowed_modes=["air","sea"])
 
-def test_full_graph_runs_all_six_and_skips_empty_documents():
+def test_full_graph_runs_all_six_and_checks_missing_documents():
     result=LogisticsOrchestrator().analyze(make_shipment())
     assert result.status=="completed"
     assert result.agents["route_optimization"].status=="completed"
-    assert result.agents["document_intelligence"].status=="skipped"
+    assert result.agents["document_intelligence"].status=="completed"
+    assert result.agents["document_intelligence"].data["missing_document_types"]==["commercial_invoice","packing_list","bill_of_lading"]
     assert result.agents["logistics_orchestrator"].data["workflow"]=="LangGraph StateGraph"
 
 def test_graph_retries_bounded_and_returns_safe_partial_result(monkeypatch):
