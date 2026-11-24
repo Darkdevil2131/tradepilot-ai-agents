@@ -70,7 +70,7 @@ async def analyze_shipment(payload:ShipmentRequest):
         # Narrative generation is optional and cannot alter calculated values or agent outputs.
         narrative=narrator.narrate({k:v.data for k,v in analysis.agents.items() if v.status=="completed"})
         analysis.agents["logistics_orchestrator"].data["gemini_narrative"]=narrative
-        store.save(analysis)
+        store.save(analysis, payload.model_dump_json())
         return analysis
     except Exception:
         logger.exception("shipment analysis failed")
@@ -86,3 +86,11 @@ async def get_shipment(shipment_id:str):
 async def validate_shipment_documents(payload:DocumentValidationRequest):
     result=validate_documents(payload.shipment)
     return DocumentValidationResponse(shipment_id=payload.shipment.shipment_id,**result)
+
+
+@app.get("/api/v1/shipments/{shipment_id}/history", dependencies=[Depends(require_api_key)])
+def shipment_history(shipment_id: str):
+    revisions = store.history(shipment_id)
+    if not revisions:
+        raise HTTPException(status_code=404, detail="No shipment history in this database")
+    return {"shipment_id": shipment_id, "revisions": revisions}

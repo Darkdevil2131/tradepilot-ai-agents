@@ -16,7 +16,7 @@ class StrictModel(BaseModel):
 
 class Quote(StrictModel):
     carrier_id: str = Field(min_length=1, max_length=80)
-    mode: Literal["air", "sea", "road"]
+    mode: Literal["air", "sea", "road", "rail"]
     amount: float = Field(gt=0, le=100_000_000)
     currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
     valid_until: datetime | None = None
@@ -42,10 +42,11 @@ class ShipmentRequest(StrictModel):
     destination: str = Field(min_length=2, max_length=100)
     cargo_description: str = Field(min_length=2, max_length=500)
     weight_kg: float = Field(gt=0, le=1_000_000)
+    dimensions_cm: tuple[float, float, float] | None = None
     volume_m3: float | None = Field(default=None, gt=0, le=10_000)
     declared_value: float | None = Field(default=None, ge=0, le=1_000_000_000)
     deadline: datetime | None = None
-    allowed_modes: list[Literal["air", "sea", "road"]] = Field(default_factory=lambda: ["air", "sea", "road"], min_length=1, max_length=3)
+    allowed_modes: list[Literal["air", "sea", "road", "rail"]] = Field(default_factory=lambda: ["air", "sea", "road"], min_length=1, max_length=4)
     quotes: list[Quote] = Field(default_factory=list, max_length=50)
     documents: list[ShippingDocument] = Field(default_factory=list, max_length=20)
     incoterm: str | None = Field(default=None, max_length=20)
@@ -64,6 +65,9 @@ class ShipmentRequest(StrictModel):
 
     @model_validator(mode="after")
     def validate_distinct_and_deadline(self):
+        import math
+        if self.dimensions_cm and any(not math.isfinite(v) or v <= 0 for v in self.dimensions_cm):
+            raise ValueError("Package dimensions must be positive and finite")
         if self.impact_scenario:
             if (self.origin.casefold(), self.destination.casefold()) != ("dubai", "mumbai"):
                 raise ValueError("The impact scenario currently covers Dubai to Mumbai only")
@@ -105,7 +109,7 @@ class DocumentValidationResponse(StrictModel):
     provenance: Provenance = Provenance.USER_PROVIDED
 
 class RouteOption(StrictModel):
-    mode: Literal["air", "sea", "road"]
+    mode: Literal["air", "sea", "road", "rail"]
     distance_km: float = Field(ge=0)
     transit_hours_estimate: float = Field(ge=0)
     cost_estimate_usd: float = Field(ge=0)
@@ -127,7 +131,7 @@ class RouteOptimizationOutput(StrictModel):
 class CarrierRecord(StrictModel):
     carrier_id: str
     name: str
-    mode: Literal["air", "sea", "road"]
+    mode: Literal["air", "sea", "road", "rail"]
     regions: list[str]
     capacity_kg: float
     reliability_score: float | None = Field(ge=0,le=1)
@@ -139,6 +143,7 @@ class CarrierRecord(StrictModel):
     coverage_match: bool
 
 class CarrierResearchOutput(StrictModel):
+    leg_plans: list[dict] = Field(default_factory=list)
     carriers: list[CarrierRecord]
     excluded_capacity: int = Field(ge=0)
     excluded_coverage: int = Field(ge=0)
@@ -166,7 +171,7 @@ class DocumentValidationOutput(StrictModel):
 
 class RankedQuote(StrictModel):
     carrier_id: str
-    mode: Literal["air", "sea", "road"]
+    mode: Literal["air", "sea", "road", "rail"]
     amount: float = Field(gt=0)
     currency: str
     valid_until: str | None
@@ -174,12 +179,13 @@ class RankedQuote(StrictModel):
 
 class ProcurementRecommendation(StrictModel):
     carrier_id: str
-    mode: Literal["air", "sea", "road"]
+    mode: Literal["air", "sea", "road", "rail"]
     amount: float = Field(gt=0)
     currency: str
     requires_human_approval: Literal[True]
 
 class ProcurementOutput(StrictModel):
+    sourced_plan: dict | None = None
     quotes_received: int = Field(ge=0)
     eligible_quotes: int = Field(ge=0)
     ranked_quotes: list[RankedQuote]

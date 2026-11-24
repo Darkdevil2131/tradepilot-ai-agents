@@ -75,7 +75,7 @@ portion. A target date can be missed at a cost; a shipment deadline is a hard
 constraint. The fixture covers Dubai to Mumbai, including road transfers.
 Set `closed_leg_ids` or `freight_multiplier` within `impact_scenario` to
 compare disruptions and prices. Empty options include rejection reasons.
-The fixture has no contracted quotes or carrier assignments.
+Carrier Research assigns synthetic leg tariffs using combined weight on each leg. See carrier_research.data.leg_plans and market_procurement.data.sourced_plan for the priced plan. Shipment-wide quotes have no leg scope and cannot replace these tariffs.
 
 ## Synthetic carrier evaluation
 
@@ -92,3 +92,16 @@ directional lane. With zero matching rows it is null. See
 `tradepilot/fixtures/history.csv` for the evidence and
 `scripts/generate_history.py` for its deterministic generator. The dataset
 is development material; the workflow uses aggregation, without model training.
+
+## Reassessment and dimensional fit
+
+Submit a changed request with the same shipment ID. The authenticated
+`GET /api/v1/shipments/{shipment_id}/history` endpoint returns ordered
+revisions with the submitted inputs, changed top-level fields and full results.
+Historical inputs for records created before the migration are unavailable.
+Reanalysis runs the full workflow. Revisions share the local SQLite lifetime.
+
+Optional `dimensions_cm` is a three-number bounding box for the largest
+package. The fixture allows rotation across the three axes and checks each
+service envelope. Missing dimensions leave fit unverified. Request rail with
+`allowed_modes: ["rail"]` on the synthetic Mumbai–Delhi corridor.

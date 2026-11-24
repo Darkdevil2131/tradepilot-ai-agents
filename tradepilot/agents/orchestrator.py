@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from langgraph.graph import StateGraph, START, END
 from ..models import AgentResult, Provenance, ShipmentRequest, ShipmentAnalysis, StrictModel
 from .route import RouteOptimizationAgent
-from .carrier import CarrierResearchAgent
+from .carrier import CarrierResearchAgent, source_leg_plans
 from .risk import RiskComplianceAgent
 from .documents import DocumentIntelligenceAgent
 from .procurement import MarketProcurementAgent
@@ -64,11 +64,24 @@ class LogisticsOrchestrator:
             try:return [Provenance(raw)]
             except ValueError:return [Provenance.ESTIMATED]
         return [Provenance.ESTIMATED]
-    def _route(self,s): return self._safe(s,"route_optimization",lambda:self.route.run(s["shipment"]))
+    def _route(self,s):
+        update = self._safe(s,"route_optimization",lambda:self.route.run(s["shipment"]))
+        result = update["results"]["route_optimization"]
+        from ..tools import CITY_COORDS
+        unknown = [city for city in (s["shipment"].origin, s["shipment"].destination) if city.casefold() not in CITY_COORDS]
+        if unknown and result.status == "failed":
+            result.warnings.append("No offline route evidence for: " + ", ".join(unknown))
+        return update
     def _carrier(self,s):
         route=s.get("results",{}).get("route_optimization")
         modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
-        return self._safe(s,"carrier_research",lambda:self.carrier.run(s["shipment"],modes))
+        def investigate():
+            result = self.carrier.run(s["shipment"], modes)
+            comparison = route.data.get("impact_comparison") if route else None
+            if comparison:
+                result.leg_plans = source_leg_plans(s["shipment"], comparison["options"])
+            return result
+        return self._safe(s,"carrier_research",investigate)
     def _risk(self,s): return self._safe(s,"risk_compliance",lambda:self.risk.run(s["shipment"]))
     def _documents(self,s): return self._safe(s,"document_intelligence",lambda:self.documents.run(s["shipment"]))
     def _procurement(self,s):
@@ -81,10 +94,18 @@ class LogisticsOrchestrator:
         filtered = shipment.model_copy(update={"quotes": matching})
         def compare_supported():
             decision = self.procurement.run(filtered, modes)
+            candidates = []
+            for plan in carrier.data.get("leg_plans", []):
+                if all(leg["freight_inr"] is not None for leg in plan["legs"]):
+                    total = round(sum(leg["freight_inr"] for leg in plan["legs"]), 2)
+                    candidates.append(dict(**plan, freight_inr=total, total_impact_inr=round(total+plan["delay_loss_inr"],2),
+                                           provenance="SYNTHETIC", requires_human_approval=True))
+            decision.sourced_plan = min(candidates, key=lambda p:p["total_impact_inr"], default=None)
             decision.quotes_received = len(shipment.quotes)
             if len(matching) < len(shipment.quotes):
                 decision.note += " Quotes without an eligible carrier/mode match were excluded."
             if any(flag["severity"] == "high" for flag in s["results"]["risk_compliance"].data.get("flags", [])) or s["results"]["risk_compliance"].status != "completed":
+                decision.sourced_plan = None
                 decision.recommendation = None
                 decision.recommendation_warning = "Cargo acceptance needs human review."
             return decision
@@ -100,6 +121,20 @@ class LogisticsOrchestrator:
         results["logistics_orchestrator"]=AgentResult(agent="logistics_orchestrator",status="partial" if state.get("errors") else "completed",provenance=[Provenance.USER_PROVIDED],data={"workflow":"LangGraph StateGraph","bounded_attempts":self.max_attempts,"errors":state.get("errors",[]),"retry_counts":state.get("retry_counts",{})})
         required=["route_optimization","carrier_research","risk_compliance","market_procurement","document_intelligence"]
         failed=any(results[k].status=="failed" for k in required)
+        commercial = results["market_procurement"].data
+        documents = results["document_intelligence"].data
+        review = list(documents.get("issues", []))
+        review.extend("Supply or review " + kind for kind in documents.get("missing_document_types", []))
+        review.extend(flag["reason"] for flag in results["risk_compliance"].data.get("flags", []))
+        if shipment.dimensions_cm is None:
+            review.append("Supply largest package dimensions to verify service fit.")
+        candidate = commercial.get("sourced_plan") or commercial.get("recommendation")
+        results["logistics_orchestrator"].data["decision"] = {
+            "status": "incomplete" if failed else "conditional_recommendation" if candidate else "no_supported_offer",
+            "candidate": candidate if not failed else None,
+            "review_items": review,
+            "requires_human_approval": True,
+        }
         prov={p for result in results.values() for p in result.provenance}
         # Mark synthetic static carrier fixtures accurately.
         if results.get("carrier_research") and results["carrier_research"].status=="completed": prov.add(Provenance.SYNTHETIC)
@@ -108,6 +143,6 @@ class LogisticsOrchestrator:
         if shipment.impact_scenario:
             prov.add(Provenance.SYNTHETIC)
             summary = ("See impact_comparison for synthetic connected paths ranked by freight plus stoppage loss. "
-                       "The comparison has no linked carrier offers. Carrier and procurement shortlists are empty.")
+                       "Carrier leg_plans and procurement sourced_plan identify synthetic tariffs and outstanding quotations.")
         if failed: summary="Analysis is partial because one or more agents failed; inspect each agent status and warning."
         return ShipmentAnalysis(shipment_id=sid,status="partial" if failed else "completed",created_at=state["created_at"],persistence="sqlite_ephemeral_or_local",data_provenance=sorted(prov,key=lambda x:x.value),agents=results,summary=summary)

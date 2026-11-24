@@ -38,6 +38,15 @@ def haversine_km(origin: str, destination: str) -> float:
     h = sin(dlat/2)**2 + cos(lat1)*cos(lat2)*sin(dlon/2)**2
     return 6371.0088 * 2 * asin(sqrt(h))
 
+# Conservative axis-aligned package envelopes for the synthetic services, in cm.
+ENVELOPES = {"road": (1200, 240, 240), "rail": (1200, 240, 240),
+             "sea": (1200, 235, 235), "air": (300, 200, 150)}
+
+def fits_package(shipment, mode):
+    if shipment.dimensions_cm is None:
+        return True
+    return all(x <= limit for x, limit in zip(sorted(shipment.dimensions_cm), sorted(ENVELOPES[mode])))
+
 def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
     distance = haversine_km(shipment.origin, shipment.destination)
     results = []
@@ -48,6 +57,9 @@ def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
         if mode == "road":
             mode_feasible=same_country
             feasibility_reason="Sample cities share a country; this is only a demo eligibility check, not a road-network route." if mode_feasible else "Offline road mode is limited to sample city pairs in the same country; no cross-border road routing is modeled."
+        elif mode == "rail":
+            mode_feasible = {origin, destination} == {"mumbai", "delhi"}
+            feasibility_reason = "Synthetic rail corridor is limited to Mumbai–Delhi."
         elif mode == "sea":
             mode_feasible=origin in PORT_CITIES and destination in PORT_CITIES
             feasibility_reason="Both sample cities are treated as port nodes; a real maritime lane is not calculated." if mode_feasible else "Sea mode requires both sample cities to be in the built-in port list; inland transfers are not modeled."
@@ -55,13 +67,16 @@ def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
             mode_feasible=True
             feasibility_reason="Both cities are in the offline sample table; airport availability, schedules, and actual service are not verified."
         # Detour factors only approximate network routing; distances are not road/sea network paths.
-        factor = {"air": 1.08, "sea": 1.65, "road": 1.25}[mode]
+        if not fits_package(shipment, mode):
+            mode_feasible = False
+            feasibility_reason = "Package exceeds the synthetic service dimensions."
+        factor = {"rail": 1.3, "air": 1.08, "sea": 1.65, "road": 1.25}[mode]
         network_estimate = distance * factor
-        transit_hours = network_estimate / MODE_KMH[mode] + {"air": 12, "sea": 48, "road": 8}[mode]
-        cost = max(25.0, tonnes * network_estimate * MODE_RATE_USD_TON_KM[mode])
+        transit_hours = network_estimate / (48 if mode == "rail" else MODE_KMH[mode]) + {"rail": 14, "air": 12, "sea": 48, "road": 8}[mode]
+        cost = max(25.0, tonnes * network_estimate * (0.06 if mode == "rail" else MODE_RATE_USD_TON_KM[mode]))
         deadline_ok = shipment.deadline is None or transit_hours <= max(0, (shipment.deadline - datetime.now(timezone.utc)).total_seconds()/3600)
         feasible=mode_feasible and deadline_ok
-        results.append({"mode":mode,"distance_km":round(network_estimate,1),"transit_hours_estimate":round(transit_hours,1),"cost_estimate_usd":round(cost,2),"mode_feasible":mode_feasible,"deadline_feasible":deadline_ok,"feasible":feasible,"feasibility_reason":feasibility_reason,"risk_score_estimate": {"air":0.12,"sea":0.30,"road":0.22}[mode],"provenance":Provenance.ESTIMATED.value,"distance_method":"straight-line distance × fixed demo factor; not a navigable route"})
+        results.append({"mode":mode,"distance_km":round(network_estimate,1),"transit_hours_estimate":round(transit_hours,1),"cost_estimate_usd":round(cost,2),"mode_feasible":mode_feasible,"deadline_feasible":deadline_ok,"feasible":feasible,"feasibility_reason":feasibility_reason,"risk_score_estimate": {"rail":0.18,"air":0.12,"sea":0.30,"road":0.22}[mode],"provenance":Provenance.ESTIMATED.value,"distance_method":"straight-line distance × fixed demo factor; not a navigable route"})
     return sorted(results,key=lambda r:(not r["feasible"],r["cost_estimate_usd"],r["transit_hours_estimate"]))
 
 def validate_documents(shipment: ShipmentRequest) -> dict:
@@ -69,17 +84,40 @@ def validate_documents(shipment: ShipmentRequest) -> dict:
     required = ["commercial_invoice", "packing_list", "bill_of_lading"]
     missing = [kind for kind in required if kind not in by_type]
     issues = []
-    invoice = by_type.get("commercial_invoice")
-    if invoice:
-        for key in ("invoice_number", "shipper", "consignee", "currency", "total"):
-            if not invoice.fields.get(key): issues.append(f"commercial_invoice is missing {key}")
-        total = invoice.fields.get("total")
-        if isinstance(total,(int,float)) and shipment.declared_value is not None and abs(float(total)-shipment.declared_value) > max(1.0,shipment.declared_value*0.01):
-            issues.append("commercial_invoice total differs from shipment declared_value by more than 1%")
-    bol = by_type.get("bill_of_lading")
-    if bol and not bol.fields.get("consignee"): issues.append("bill_of_lading is missing consignee")
-    packing = by_type.get("packing_list")
-    if packing and not packing.fields.get("package_count"): issues.append("packing_list is missing package_count")
+    from decimal import Decimal, InvalidOperation
+    import json
+
+    seen, invoices, consignees = set(), set(), set()
+    for doc in shipment.documents:
+        fields = doc.fields
+        fingerprint = (doc.document_type, json.dumps(fields, sort_keys=True))
+        if fingerprint in seen:
+            issues.append(f"Duplicate {doc.document_type}")
+        seen.add(fingerprint)
+        required_fields = {"commercial_invoice": ("invoice_number","shipper","consignee","currency","total"),
+                           "packing_list": ("package_count",), "bill_of_lading": ("consignee",)}
+        for key in required_fields.get(doc.document_type, ()):
+            if not str(fields.get(key) if fields.get(key) is not None else "").strip():
+                issues.append(f"{doc.document_type} is missing {key}")
+        if fields.get("consignee"):
+            consignees.add(" ".join(str(fields["consignee"]).casefold().split()))
+        if doc.document_type == "commercial_invoice":
+            identity = tuple(str(fields.get(k,"")).strip().casefold() for k in ("shipper","invoice_number"))
+            if identity in invoices:
+                issues.append("Repeated shipper and invoice number")
+            invoices.add(identity)
+        numeric = {"commercial_invoice":"total","packing_list":"package_count"}.get(doc.document_type)
+        if numeric and numeric in fields:
+            try:
+                value = Decimal(str(fields[numeric]))
+                if not value.is_finite() or value <= 0 or (numeric == "package_count" and value != value.to_integral_value()):
+                    raise ValueError
+                if numeric == "total" and shipment.declared_value is not None and abs(float(value)-shipment.declared_value)>max(1,shipment.declared_value*.01):
+                    issues.append("commercial_invoice total differs from declared value")
+            except (ValueError, InvalidOperation):
+                issues.append(f"Invalid {doc.document_type} {numeric}")
+    if len(consignees) > 1:
+        issues.append("Consignee differs across documents")
     dangerous = contains_dangerous_goods_keyword(shipment.cargo_description)
     if dangerous and "dangerous_goods_declaration" not in by_type:
         missing.append("dangerous_goods_declaration")
@@ -134,6 +172,8 @@ def impact_options(shipment: ShipmentRequest) -> dict:
                 quantities[leg] = quantities.get(leg, Decimal(0)) + mass
                 if quantities[leg] > capacity:
                     reasons.add(f"capacity:{leg}")
+                if not fits_package(shipment, mode):
+                    reasons.add(f"dimensions:{leg}")
                 if leg in scenario.closed_leg_ids:
                     reasons.add(f"closed:{leg}")
                 if mode not in shipment.allowed_modes:

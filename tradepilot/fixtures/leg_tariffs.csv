@@ -1,0 +1,6 @@
+leg,carrier_id,capacity_kg,inr_per_kg
+pickup,SIM-DXB-TRUCK,10000,5
+pickup,SIM-DXB-VAN,300,4
+air,SIM-DXB-BOM-AIR,500,410
+ocean,SIM-DXB-BOM-OCEAN,10000,80
+delivery,SIM-BOM-TRUCK,10000,5
