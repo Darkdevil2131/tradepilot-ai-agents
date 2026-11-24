@@ -4,7 +4,7 @@ A backend prototype for shipment decision support. It uses a LangGraph `StateGra
 
 ## Current capabilities and limits
 
-- Route estimates use a small built-in city-coordinate table, straight-line distance, and fixed demo factors. They are not navigable routes, live ETAs, or carrier quotes.
+- Route estimates use a small built-in city-coordinate table, straight-line distance, and fixed demo factors. Mode eligibility uses a small country/port sample table; it is not a verified transport connection. They are not navigable routes, live ETAs, or carrier quotes.
 - Carrier records, capacities, coverage, and reliability scores are fictional synthetic fixtures. Demo coverage checks distinguish sample domestic India city pairs from cross-border routes; they are not verified carrier service areas.
 - Risk checks are basic keyword and completeness rules. There is no live customs, sanctions, tariff, or jurisdiction screening.
 - Document validation checks user-entered fields. It does not read PDFs, scans, images, or OCR.

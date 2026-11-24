@@ -1,6 +1,6 @@
 """Deterministic tools. Outputs are estimates or synthetic demo records, never live logistics data."""
 from __future__ import annotations
-from math import radians, sin, cos, asin, sqrt, ceil
+from math import radians, sin, cos, asin, sqrt
 from datetime import datetime, timezone
 from .models import Provenance, Quote, ShipmentRequest
 
@@ -12,6 +12,11 @@ CITY_COORDS = {
  "shanghai": (31.2304,121.4737), "london": (51.5072,-0.1276), "new york": (40.7128,-74.0060),
  "los angeles": (34.0522,-118.2437), "pune": (18.5204,73.8567), "hyderabad": (17.3850,78.4867),
 }
+CITY_COUNTRIES = {
+ "mumbai":"india", "delhi":"india", "new delhi":"india", "chennai":"india", "kolkata":"india", "bengaluru":"india", "pune":"india", "hyderabad":"india",
+ "singapore":"singapore", "dubai":"uae", "rotterdam":"netherlands", "shanghai":"china", "london":"uk", "new york":"usa", "los angeles":"usa",
+}
+PORT_CITIES={"mumbai","chennai","kolkata","singapore","dubai","rotterdam","shanghai","london","new york","los angeles"}
 MODE_KMH = {"air": 750.0, "sea": 30.0, "road": 55.0}
 MODE_RATE_USD_TON_KM = {"air": 0.42, "sea": 0.025, "road": 0.09}
 
@@ -28,15 +33,27 @@ def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
     distance = haversine_km(shipment.origin, shipment.destination)
     results = []
     tonnes = shipment.weight_kg / 1000
+    origin=shipment.origin.casefold(); destination=shipment.destination.casefold()
+    same_country=CITY_COUNTRIES.get(origin) is not None and CITY_COUNTRIES.get(origin)==CITY_COUNTRIES.get(destination)
     for mode in shipment.allowed_modes:
+        if mode == "road":
+            mode_feasible=same_country
+            feasibility_reason="Sample cities share a country; this is only a demo eligibility check, not a road-network route." if mode_feasible else "Offline road mode is limited to sample city pairs in the same country; no cross-border road routing is modeled."
+        elif mode == "sea":
+            mode_feasible=origin in PORT_CITIES and destination in PORT_CITIES
+            feasibility_reason="Both sample cities are treated as port nodes; a real maritime lane is not calculated." if mode_feasible else "Sea mode requires both sample cities to be in the built-in port list; inland transfers are not modeled."
+        else:
+            mode_feasible=True
+            feasibility_reason="Both cities are in the offline sample table; airport availability, schedules, and actual service are not verified."
         # Detour factors only approximate network routing; distances are not road/sea network paths.
         factor = {"air": 1.08, "sea": 1.65, "road": 1.25}[mode]
         network_estimate = distance * factor
         transit_hours = network_estimate / MODE_KMH[mode] + {"air": 12, "sea": 48, "road": 8}[mode]
         cost = max(25.0, tonnes * network_estimate * MODE_RATE_USD_TON_KM[mode])
         deadline_ok = shipment.deadline is None or transit_hours <= max(0, (shipment.deadline - datetime.now(timezone.utc)).total_seconds()/3600)
-        results.append({"mode":mode,"distance_km":round(network_estimate,1),"transit_hours_estimate":round(transit_hours,1),"cost_estimate_usd":round(cost,2),"deadline_feasible":deadline_ok,"risk_score_estimate": {"air":0.12,"sea":0.30,"road":0.22}[mode],"provenance":Provenance.ESTIMATED.value,"distance_method":"straight-line distance × fixed demo factor; not a navigable route"})
-    return sorted(results,key=lambda r:(not r["deadline_feasible"],r["cost_estimate_usd"],r["transit_hours_estimate"]))
+        feasible=mode_feasible and deadline_ok
+        results.append({"mode":mode,"distance_km":round(network_estimate,1),"transit_hours_estimate":round(transit_hours,1),"cost_estimate_usd":round(cost,2),"mode_feasible":mode_feasible,"deadline_feasible":deadline_ok,"feasible":feasible,"feasibility_reason":feasibility_reason,"risk_score_estimate": {"air":0.12,"sea":0.30,"road":0.22}[mode],"provenance":Provenance.ESTIMATED.value,"distance_method":"straight-line distance × fixed demo factor; not a navigable route"})
+    return sorted(results,key=lambda r:(not r["feasible"],r["cost_estimate_usd"],r["transit_hours_estimate"]))
 
 def validate_documents(shipment: ShipmentRequest) -> dict:
     by_type = {doc.document_type: doc for doc in shipment.documents}

@@ -96,7 +96,10 @@ class RouteOption(StrictModel):
     distance_km: float = Field(ge=0)
     transit_hours_estimate: float = Field(ge=0)
     cost_estimate_usd: float = Field(ge=0)
+    mode_feasible: bool
     deadline_feasible: bool
+    feasible: bool
+    feasibility_reason: str
     risk_score_estimate: float = Field(ge=0,le=1)
     provenance: Literal["ESTIMATED"]
     distance_method: str
@@ -104,7 +107,7 @@ class RouteOption(StrictModel):
 class RouteOptimizationOutput(StrictModel):
     routes: list[RouteOption]
     recommended_route: RouteOption | None
-    no_deadline_feasible_route: bool
+    no_feasible_route: bool
     provenance: Literal["ESTIMATED"]
 
 class CarrierRecord(StrictModel):

@@ -13,6 +13,12 @@ def test_route_agent_returns_feasible_recommendation():
     result=RouteOptimizationAgent().run(shipment())
     assert result.recommended_route.mode in {"air","sea"}
 
+def test_route_agent_rejects_cross_border_road_as_recommendation():
+    result=RouteOptimizationAgent().run(shipment(allowed_modes=["road"]))
+    assert result.recommended_route is None
+    assert result.no_feasible_route is True
+    assert result.routes[0].mode_feasible is False
+
 def test_carrier_agent_uses_synthetic_records_and_capacity():
     result=CarrierResearchAgent().run(shipment(weight_kg=40000),{"sea","air"})
     assert all(c.capacity_available for c in result.carriers)

@@ -5,5 +5,5 @@ class RouteOptimizationAgent:
     authorized_tools=("calculate_routes",)
     def run(self, shipment: ShipmentRequest) -> RouteOptimizationOutput:
         routes=calculate_routes(shipment)
-        feasible=[r for r in routes if r["deadline_feasible"]]
-        return RouteOptimizationOutput(routes=routes,recommended_route=(feasible or routes)[0] if routes else None,no_deadline_feasible_route=bool(routes and not feasible),provenance="ESTIMATED")
+        feasible=[r for r in routes if r["feasible"]]
+        return RouteOptimizationOutput(routes=routes,recommended_route=feasible[0] if feasible else None,no_feasible_route=not bool(feasible),provenance="ESTIMATED")

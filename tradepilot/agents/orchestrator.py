@@ -65,13 +65,13 @@ class LogisticsOrchestrator:
     def _route(self,s): return self._safe(s,"route_optimization",lambda:self.route.run(s["shipment"]))
     def _carrier(self,s):
         route=s.get("results",{}).get("route_optimization")
-        modes={r["mode"] for r in route.data.get("routes",[])} if route and route.status=="completed" else set(s["shipment"].allowed_modes)
+        modes={r["mode"] for r in route.data.get("routes",[]) if r.get("mode_feasible")} if route and route.status=="completed" else set()
         return self._safe(s,"carrier_research",lambda:self.carrier.run(s["shipment"],modes))
     def _risk(self,s): return self._safe(s,"risk_compliance",lambda:self.risk.run(s["shipment"]))
     def _documents(self,s): return self._safe(s,"document_intelligence",lambda:self.documents.run(s["shipment"]))
     def _procurement(self,s):
         route=s.get("results",{}).get("route_optimization")
-        modes={r["mode"] for r in route.data.get("routes",[]) if r.get("deadline_feasible")} if route and route.status=="completed" else set()
+        modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
         return self._safe(s,"market_procurement",lambda:self.procurement.run(s["shipment"],modes))
     def _finalize(self,s): return {}
     def analyze(self,shipment:ShipmentRequest)->ShipmentAnalysis:
