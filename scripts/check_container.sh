@@ -15,6 +15,10 @@ docker build -t "$run_id" .
 docker run --rm -v "$PWD/tests:/app/tests:ro" -v "$PWD/examples:/app/examples:ro" \
   "$run_id" python -m pytest -q -p no:cacheprovider /app/tests
 docker volume create "$volume" >/dev/null
+# Reproduce a provider-mounted volume owned by root at runtime.
+docker run --rm --user 0 --entrypoint sh -v "$volume:/app/data" "$run_id" \
+  -c 'chown 0:0 /app/data && chmod 755 /app/data'
+docker run --rm -v "$volume:/app/data" "$run_id" sh -c 'test "$(id -u)" = 10001 && test -w /app/data'
 export TRADEPILOT_API_KEY
 TRADEPILOT_API_KEY=$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')
 start_server() {
