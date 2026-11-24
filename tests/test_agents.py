@@ -89,3 +89,42 @@ def test_gemini_quota_failure_falls_back_safely(monkeypatch):
     result=GeminiNarrator().narrate({"route":{"cost":42}})
     assert result["status"]=="quota_or_rate_limited"
     assert "quota details" not in result["message"]
+
+
+def test_gemini_prompt_leads_with_blocked_decision(monkeypatch):
+    from tradepilot.gemini import GeminiNarrator
+    from google import genai
+
+    captured = {}
+
+    class Response:
+        text = "blocked: documents must be supplied before approval."
+
+    class Models:
+        def generate_content(self, **kwargs):
+            captured.update(kwargs)
+            return Response()
+
+    class Client:
+        def __init__(self, *args, **kwargs):
+            self.models = Models()
+
+    monkeypatch.setenv("GEMINI_ENABLED", "true")
+    monkeypatch.setenv("GEMINI_API_KEY", "unit-test-only")
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.setattr(genai, "Client", Client)
+
+    evidence = {
+        "workflow_decision": {
+            "status": "blocked",
+            "gates": [{"gate": "documents", "status": "blocked"}],
+        },
+        "specialists": {"route_optimization": {"preferred": "air/ocean"}},
+    }
+    result = GeminiNarrator().narrate(evidence)
+
+    assert result["status"] == "completed"
+    assert result["model"] == "gemini-3.5-flash-lite"
+    prompt = captured["contents"]
+    assert "first sentence must start with the exact workflow decision status" in prompt
+    assert prompt.index('"workflow_decision"') < prompt.index('"specialists"')

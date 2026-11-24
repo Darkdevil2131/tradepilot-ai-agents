@@ -78,7 +78,16 @@ def analyze_shipment(payload:ShipmentRequest):
     try:
         analysis=orchestrator.analyze(payload)
         # Narrative generation is optional and cannot alter calculated values or agent outputs.
-        narrative=narrator.narrate({k:v.data for k,v in analysis.agents.items() if v.status=="completed"})
+        completed={k:v.data for k,v in analysis.agents.items() if v.status=="completed"}
+        coordinator=completed.get("logistics_orchestrator",{})
+        # Put the authoritative workflow decision before specialist evidence so
+        # a model summary cannot mistake a feasible route for an approved plan.
+        narrative_evidence={
+            "workflow_decision":coordinator.get("decision",{}),
+            "strategic_explanation":coordinator.get("explanation",{}),
+            "specialists":{k:v for k,v in completed.items() if k!="logistics_orchestrator"},
+        }
+        narrative=narrator.narrate(narrative_evidence)
         analysis.agents["logistics_orchestrator"].data["gemini_narrative"]=narrative
         store.save(analysis, payload.model_dump_json())
         return analysis
