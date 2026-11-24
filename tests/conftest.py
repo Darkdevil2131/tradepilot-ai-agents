@@ -11,7 +11,11 @@ def api_key(monkeypatch):
 @pytest.fixture
 def client(tmp_path,monkeypatch):
     from tradepilot import main
+    from tradepilot.commercial import CommercialWorkflow
+    from tradepilot.operations import OperationsStore
     main.store=main.ShipmentStore(str(tmp_path/"shipments.sqlite3"))
+    main.operations=OperationsStore("sqlite+pysqlite:///:memory:")
+    main.commercial=CommercialWorkflow(main.operations)
     with main._rate_lock:
         main._request_windows.clear()
     with TestClient(main.app) as test_client:
