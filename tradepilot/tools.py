@@ -143,6 +143,8 @@ def validate_documents(shipment: ShipmentRequest) -> dict:
     import json
 
     seen, invoices, consignees = set(), set(), set()
+    invoice_amounts = []
+    invoice_currencies = set()
     for doc in shipment.documents:
         fields = doc.fields
         fingerprint = (doc.document_type, json.dumps(fields, sort_keys=True))
@@ -161,16 +163,29 @@ def validate_documents(shipment: ShipmentRequest) -> dict:
             if identity in invoices:
                 issues.append("Repeated shipper and invoice number")
             invoices.add(identity)
+            currency = str(fields.get("currency", "")).strip().upper()
+            if len(currency) != 3 or not currency.isascii() or not currency.isalpha():
+                issues.append("Commercial invoice currency requires a three-letter code")
+            invoice_currencies.add(currency)
         numeric = {"commercial_invoice":"total","packing_list":"package_count"}.get(doc.document_type)
         if numeric and numeric in fields:
             try:
                 value = Decimal(str(fields[numeric]))
                 if not value.is_finite() or value <= 0 or (numeric == "package_count" and value != value.to_integral_value()):
                     raise ValueError
-                if numeric == "total" and shipment.declared_value is not None and abs(float(value)-shipment.declared_value)>max(1,shipment.declared_value*.01):
-                    issues.append("commercial_invoice total differs from declared value")
+                if numeric == "total":
+                    invoice_amounts.append(value)
             except (ValueError, InvalidOperation):
                 issues.append(f"Invalid {doc.document_type} {numeric}")
+    if shipment.declared_value is not None and invoice_amounts:
+        declared = Decimal(str(shipment.declared_value))
+        tolerance = max(Decimal(1), declared * Decimal("0.01"))
+        if len(invoice_currencies) > 1:
+            issues.append("Commercial invoices use multiple currencies. Supply a common valuation before reconciliation.")
+        elif shipment.declared_value_currency and shipment.declared_value_currency not in invoice_currencies:
+            issues.append("Invoice currency differs from declared value currency. Supply a common valuation.")
+        elif any(value > declared + tolerance for value in invoice_amounts) or abs(sum(invoice_amounts) - declared) > tolerance:
+            issues.append("Combined commercial invoice total differs from declared value")
     if len(consignees) > 1:
         issues.append("Consignee differs across documents")
     dangerous = contains_dangerous_goods_keyword(shipment.cargo_description)
@@ -188,11 +203,14 @@ def compare_quotes(quotes: list[Quote], feasible_modes: set[str]) -> dict:
     ranked=sorted(eligible,key=(lambda q:(q.amount,q.carrier_id)) if same_currency else (lambda q:(q.currency,q.amount,q.carrier_id)))
     recommendation=None
     warning=None
-    if ranked and same_currency:
+    same_coverage = len({quote.includes_insurance for quote in eligible}) <= 1
+    if ranked and same_currency and same_coverage:
         recommendation={"carrier_id":ranked[0].carrier_id,"mode":ranked[0].mode,"amount":ranked[0].amount,"currency":ranked[0].currency,"requires_human_approval":True}
-    elif ranked:
+    elif ranked and not same_currency:
         warning="Quotes use multiple currencies; no FX conversion is configured, so no single cheapest recommendation is made. Compare amounts within each currency and obtain human review."
-    return {"quotes_received":len(quotes),"eligible_quotes":len(eligible),"ranked_quotes":[{"carrier_id":q.carrier_id,"mode":q.mode,"amount":q.amount,"currency":q.currency,"valid_until":q.valid_until.isoformat() if q.valid_until else None,"provenance":q.provenance.value} for q in ranked],"recommendation":recommendation,"recommendation_warning":warning,"note":"Quote ranking compares user-provided quotes only; no FX conversion, market-price lookup, or booking is performed."}
+    elif ranked:
+        warning = "Insurance coverage differs across quotes. Obtain comparable insured or uninsured prices before selecting a carrier."
+    return {"quotes_received":len(quotes),"eligible_quotes":len(eligible),"ranked_quotes":[{"carrier_id":q.carrier_id,"mode":q.mode,"amount":q.amount,"currency":q.currency,"includes_insurance":q.includes_insurance,"valid_until":q.valid_until.isoformat() if q.valid_until else None,"provenance":q.provenance.value} for q in ranked],"recommendation":recommendation,"recommendation_warning":warning,"note":"Quote ranking compares user-provided quotes only; no FX conversion, market-price lookup, or booking is performed."}
 
 
 def impact_options(shipment: ShipmentRequest) -> dict:

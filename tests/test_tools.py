@@ -71,3 +71,15 @@ def test_quotes_in_different_currencies_do_not_get_a_false_cheapest_pick():
     assert result["eligible_quotes"]==2
     assert result["recommendation"] is None
     assert "multiple currencies" in result["recommendation_warning"]
+
+
+def test_different_insurance_terms_need_comparable_prices():
+    bare = Quote(carrier_id="A", mode="air", amount=95)
+    insured = Quote(carrier_id="B", mode="air", amount=100, includes_insurance=True)
+    result = compare_quotes([insured, bare], {"air"})
+    assert result["eligible_quotes"] == 2
+    assert result["recommendation"] is None
+    assert "Insurance coverage differs" in result["recommendation_warning"]
+    assert [row["includes_insurance"] for row in result["ranked_quotes"]] == [False, True]
+    comparable = compare_quotes([insured, bare.model_copy(update={"includes_insurance": True})], {"air"})
+    assert comparable["recommendation"]["carrier_id"] == "A"

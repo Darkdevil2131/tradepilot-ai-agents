@@ -40,3 +40,31 @@ def test_closure_and_failure_explanations(client,headers):
     explanation=response["agents"]["logistics_orchestrator"]["data"]["explanation"]
     assert "incomplete" in explanation["conclusion"]
     assert any("route_optimization failure" in item["action"] for item in explanation["next_actions"])
+
+
+def test_invoice_packet_controls_final_approval(client, headers):
+    shipment = json.loads(Path("examples/impact_comparison.json").read_text())
+    docs = complete_documents()
+    docs[0]["fields"]["total"] = 200000
+    second = dict(docs[0]["fields"], invoice_number="INV-501", total=300000)
+    docs.append(dict(document_type="commercial_invoice", fields=second))
+    shipment.update(documents=docs, declared_value=500000, declared_value_currency="INR")
+
+    def decision():
+        response = client.post("/api/v1/shipments/analyze", headers=headers, json=shipment)
+        assert response.status_code == 200
+        return response.json()["agents"]["logistics_orchestrator"]["data"]["decision"]
+
+    assert decision()["candidate"]["option"] == "air/ocean"
+    for first_amount, second_amount, currency, issue in [
+        (500000, 500000, "INR", "Combined commercial invoice total"),
+        (200000, 300000, "USD", "multiple currencies"),
+    ]:
+        docs[0]["fields"]["total"] = first_amount
+        second.update(total=second_amount, currency=currency)
+        result = decision()
+        assert result["status"] == "blocked" and result["candidate"] is None
+        assert any(issue in item for item in result["review_items"])
+
+    docs[0]["fields"]["currency"] = "USD"
+    assert any("declared value currency" in item for item in decision()["review_items"])

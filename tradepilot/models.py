@@ -45,6 +45,7 @@ class ShipmentRequest(StrictModel):
     dimensions_cm: tuple[float, float, float] | None = None
     volume_m3: float | None = Field(default=None, gt=0, le=10_000)
     declared_value: float | None = Field(default=None, ge=0, le=1_000_000_000)
+    declared_value_currency: str | None = Field(default=None, pattern=r"^[A-Z]{3}$")
     deadline: datetime | None = None
     allowed_modes: list[Literal["air", "sea", "road", "rail"]] = Field(default_factory=lambda: ["air", "sea", "road"], min_length=1, max_length=4)
     quotes: list[Quote] = Field(default_factory=list, max_length=50)
@@ -179,6 +180,7 @@ class DocumentValidationOutput(StrictModel):
     provenance: Literal["USER_PROVIDED"]
 
 class RankedQuote(StrictModel):
+    includes_insurance: bool = False
     carrier_id: str
     mode: Literal["air", "sea", "road", "rail"]
     amount: float = Field(gt=0)

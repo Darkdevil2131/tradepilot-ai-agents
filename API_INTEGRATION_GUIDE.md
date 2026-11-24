@@ -116,3 +116,14 @@ Sensitivity thresholds hold freight, topology, capacity and critical weight
 fixed. They compare pairs of feasible options and do not imply uncertainty
 estimates or prediction accuracy. All fixture-derived comparisons are synthetic.
 The explanation is part of the orchestrator and requires no model call.
+
+For shipments with several commercial invoices, provide the shipment-wide
+`declared_value` and its optional three-letter `declared_value_currency`.
+Validation compares the combined invoice amount with the declaration, using
+the existing tolerance of 1% or one currency unit, whichever is larger.
+When the declaration omits a currency, validation assumes the single invoice
+currency. Mixed currencies require a common valuation.
+
+Procurement returns each eligible quote's `includes_insurance` flag. When
+eligible quotes have different coverage terms, the response retains their
+prices and asks for comparable offers before recommending a carrier.
