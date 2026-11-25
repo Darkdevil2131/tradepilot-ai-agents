@@ -91,10 +91,37 @@ class RoadCoordinate(StrictModel):
     longitude: float = Field(ge=-180, le=180)
 
 
+class TruckProfile(StrictModel):
+    height_cm: int = Field(gt=0, le=1000)
+    width_cm: int = Field(gt=0, le=1000)
+    length_cm: int = Field(gt=0, le=10000)
+    tare_weight_kg: int = Field(gt=0, le=200000)
+    loaded_weight_kg: int = Field(gt=0, le=200000)
+    gross_weight_rating_kg: int = Field(gt=0, le=200000)
+    max_axle_weight_kg: int = Field(gt=0, le=200000)
+    axle_count: int = Field(ge=2, le=20)
+
+    @model_validator(mode="after")
+    def check_weights(self):
+        if not self.tare_weight_kg < self.loaded_weight_kg <= self.gross_weight_rating_kg:
+            raise ValueError("Truck weights must be tare < loaded <= gross weight rating")
+        if not self.loaded_weight_kg <= self.max_axle_weight_kg * self.axle_count or self.max_axle_weight_kg > self.loaded_weight_kg:
+            raise ValueError("Maximum axle weight is inconsistent with loaded weight and axle count")
+        return self
+
+
 class RoadGuidanceRequest(StrictModel):
     origin: RoadCoordinate
     destination: RoadCoordinate
     departure_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    truck: TruckProfile | None = None
+    max_toll_inr: float | None = Field(default=None, ge=0, le=100_000_000)
+
+    @model_validator(mode="after")
+    def toll_requires_truck(self):
+        if self.max_toll_inr is not None and self.truck is None:
+            raise ValueError("A toll budget requires a truck profile")
+        return self
 
     @field_validator("departure_at")
     @classmethod
@@ -168,6 +195,9 @@ class ShipmentRequest(StrictModel):
                 raise ValueError("road_guidance requires road-only service without a split impact_scenario")
             if self.road_guidance.origin == self.road_guidance.destination:
                 raise ValueError("road_guidance endpoints must have distinct coordinates")
+            truck = self.road_guidance.truck
+            if truck and self.weight_kg > truck.loaded_weight_kg - truck.tare_weight_kg:
+                raise ValueError("Shipment exceeds the declared loaded truck payload")
         service_keys = {(row.carrier_id, row.mode) for row in self.carrier_services}
         if len(service_keys) != len(self.carrier_services):
             raise ValueError("carrier_services must not duplicate a carrier and mode")
@@ -230,6 +260,19 @@ class RouteWeather(StrictModel):
     samples: list[RouteWeatherSample]
 
 
+class TruckRouteEvidence(StrictModel):
+    source: Literal["HERE Routing API v8"] = "HERE Routing API v8"
+    retrieved_at_utc: datetime
+    traffic_status: Literal["time_aware", "baseline_unavailable"]
+    provider_duration_hours: float
+    base_duration_hours: float | None = None
+    time_aware_delta_hours: float | None = None
+    toll_status: Literal["priced", "unavailable"]
+    toll_inr: float | None = None
+    access_status: Literal["no_reported_violation", "restriction_reported", "review_required"]
+    notices: list[str] = Field(default_factory=list)
+
+
 class RouteOption(StrictModel):
     mode: Literal["air", "sea", "road", "rail"]
     distance_km: float = Field(ge=0)
@@ -252,6 +295,7 @@ class RouteOption(StrictModel):
     disruption_ids: list[str] = Field(default_factory=list)
     geometry_lon_lat: list[tuple[float, float]] | None = None
     weather: RouteWeather | None = None
+    truck_evidence: TruckRouteEvidence | None = None
 
 class RouteOptimizationOutput(StrictModel):
     impact_comparison: dict | None = None
@@ -261,7 +305,7 @@ class RouteOptimizationOutput(StrictModel):
     provenance: Literal["ESTIMATED"]
     ranking_method: str = "weighted multi-objective deterministic ranking"
     alternatives: list[dict] = Field(default_factory=list)
-    provider_status: Literal["not_configured", "routing_unavailable", "no_route", "weather_unavailable", "weather_partial", "available"] | None = None
+    provider_status: Literal["not_configured", "routing_unavailable", "no_route", "weather_unavailable", "weather_partial", "truck_evidence_incomplete", "available"] | None = None
 
 class CarrierRecord(StrictModel):
     carrier_id: str

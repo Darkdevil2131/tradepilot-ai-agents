@@ -196,6 +196,44 @@ origin/destination names. Provider mode requires submitted commercial
 evidence. It does not estimate freight prices, tolls, live traffic or
 truck-specific restrictions. Weather attribution: Open-Meteo. Routing
 attribution: OSRM and OpenStreetMap contributors.
+
+## Truck traffic, tolls, and restriction evidence
+
+Add a truck profile to `road_guidance` for truck-specific routing:
+
+```json
+{
+  "truck": {
+    "height_cm": 350,
+    "width_cm": 240,
+    "length_cm": 850,
+    "tare_weight_kg": 4200,
+    "loaded_weight_kg": 7000,
+    "gross_weight_rating_kg": 9000,
+    "max_axle_weight_kg": 4000,
+    "axle_count": 2
+  },
+  "max_toll_inr": 800
+}
+```
+
+This mode uses the HERE Routing API v8 with the truck dimensions, loaded
+weight, gross rating and axle data. The API requests time-aware duration
+and INR toll totals. Configure `TRADEPILOT_HERE_TRUCK_ENABLED=true` and
+`TRADEPILOT_HERE_API_KEY` only after confirming that the account and usage
+are authorized and no-charge, including the additional toll transaction
+and expected request volume. The feature is off by default.
+
+Read `routes[].truck_evidence` for the provider duration, baseline,
+time-aware delta, toll estimate and restriction notice codes. Time-aware
+estimates can use live or historical traffic. Posted restrictions and toll
+conditions still require operational confirmation. A missing toll stays
+unknown. A reported violation, a missing comparable baseline or toll price,
+or an exceeded toll budget prevents that alternative from being selected.
+Other provider notices are flagged for human review. The route still goes
+through the existing weather and submitted-quote checks. A toll estimate
+is separate from the all-in shipment quote. Truck mode does not substitute
+OSRM if the truck provider cannot supply evidence.
 Carrier Research assigns synthetic leg tariffs using combined weight on each leg. See carrier_research.data.leg_plans and market_procurement.data.sourced_plan for the priced plan. Shipment-wide quotes have no leg scope and cannot replace these tariffs.
 
 ## Synthetic carrier evaluation

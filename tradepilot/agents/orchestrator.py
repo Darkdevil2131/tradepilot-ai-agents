@@ -141,7 +141,7 @@ class LogisticsOrchestrator:
         if shipment.dimensions_cm is None:
             review.append("Supply largest package dimensions to verify service fit.")
         if shipment.road_guidance:
-            review.append("Confirm truck restrictions and live traffic with the carrier before dispatch.")
+            review.append("Confirm posted restrictions, toll payment terms, and current road conditions with the carrier before dispatch.")
         candidate = commercial.get("sourced_plan") or commercial.get("recommendation")
         gates = []
         route_data = results["route_optimization"].data
@@ -172,6 +172,16 @@ class LogisticsOrchestrator:
                 reason=f"Provider status: {provider_status}. Selected route forecast flag: {weather.get('severity', 'unavailable')}.",
                 evidence_path="/agents/route_optimization/data",
             ))
+            if shipment.road_guidance.truck:
+                truck = preferred.get("truck_evidence") or {}
+                truck_status = ("blocked" if not truck else "review_required"
+                                if truck["access_status"] == "review_required" else "passed")
+                gates.append(DecisionGate(
+                    gate="truck_route_evidence", status=truck_status,
+                    reason="Truck eligibility is based on provider notices and the supplied vehicle profile."
+                    if truck else "No selectable alternative has complete truck route evidence within the stated constraints.",
+                    evidence_path="/agents/route_optimization/data",
+                ))
         if candidate is None:
             gates.append(DecisionGate(gate="commercial_offer", status="blocked", reason="No eligible provider-backed plan or quote is available.", evidence_path="/agents/market_procurement/data"))
         else:

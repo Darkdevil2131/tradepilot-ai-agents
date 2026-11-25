@@ -121,3 +121,81 @@ def test_unconfigured_provider_does_not_return_offline_route(client, headers, mo
     routes = analyze(client, headers, road_trip)["route_optimization"]["data"]
     assert routes["provider_status"] == "not_configured"
     assert routes["routes"] == []
+
+
+def setup_truck(monkeypatch, road_trip, include_tolls=True):
+    from flexpolyline import encode
+
+    road_trip["road_guidance"]["truck"] = dict(
+        height_cm=350, width_cm=240, length_cm=850, tare_weight_kg=4200,
+        loaded_weight_kg=7000, gross_weight_rating_kg=9000, max_axle_weight_kg=4000,
+        axle_count=2,
+    )
+    departure = datetime.fromisoformat(road_trip["road_guidance"]["departure_at"])
+    timestamps = [(departure + timedelta(hours=i)).strftime("%Y-%m-%dT%H:00") for i in range(48)]
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if request.url.host == "router.hereapi.com":
+            assert request.url.params["transportMode"] == "truck"
+            assert request.url.params["vehicle[currentWeight]"] == "7000"
+            assert request.url.params["vehicle[height]"] == "350"
+            assert request.url.params["departureTime"] == departure.isoformat()
+            assert request.url.params["tolls[summaries]"] == "total"
+            routes = []
+            for index, (duration, toll) in enumerate(((36000, 300), (43200, 1200), (46800, 700))):
+                shape = encode([(9.9312, 76.2673), (10.8 + index, 77.9), (13.0827, 80.2707)])
+                summary = dict(length=700000, duration=duration, baseDuration=duration - 3600)
+                if include_tolls or index != 2:
+                    summary["tolls"] = {"total": {"type": "value", "currency": "INR", "value": toll}}
+                section = dict(summary=summary, polyline=shape)
+                if index == 0:
+                    section["notices"] = [{"code": "violatedVehicleRestriction", "severity": "critical"}]
+                routes.append({"sections": [section]})
+            return httpx.Response(200, json={"routes": routes})
+        points = len(request.url.params["latitude"].split(","))
+        return httpx.Response(200, json=[
+            dict(hourly_units=dict(precipitation="mm", wind_gusts_10m="km/h", visibility="m"),
+                 hourly=dict(time=timestamps, precipitation=[0] * 48, wind_gusts_10m=[10] * 48,
+                             visibility=[10000] * 48, weather_code=[0] * 48))
+            for _ in range(points)
+        ])
+    monkeypatch.setenv("TRADEPILOT_HERE_TRUCK_ENABLED", "true")
+    monkeypatch.setenv("TRADEPILOT_HERE_API_KEY", "unit-test-only")
+    monkeypatch.setenv("TRADEPILOT_FORECAST_URL", "https://weather.example/v1/forecast")
+    monkeypatch.setattr(road_guidance, "httpx", SimpleNamespace(
+        Client=lambda **kwargs: httpx.Client(transport=httpx.MockTransport(handler), **kwargs),
+        Timeout=httpx.Timeout, HTTPError=httpx.HTTPError,
+    ))
+    return calls
+
+
+def test_truck_chooses_within_toll_budget_and_excludes_restriction(client, headers, monkeypatch, road_trip):
+    calls = setup_truck(monkeypatch, road_trip)
+    road_trip["road_guidance"]["max_toll_inr"] = 800
+    result = analyze(client, headers, road_trip)["route_optimization"]["data"]
+    preferred = result["recommended_route"]
+    assert preferred["transit_hours_estimate"] == 13
+    assert preferred["truck_evidence"]["base_duration_hours"] == 12
+    assert preferred["truck_evidence"]["time_aware_delta_hours"] == 1
+    assert preferred["truck_evidence"]["toll_inr"] == 700
+    assert preferred["truck_evidence"]["access_status"] == "no_reported_violation"
+    assert any("truck restriction" in route["feasibility_reason"] for route in result["routes"] if not route["feasible"])
+    assert any("Toll estimate exceeds" in route["feasibility_reason"] for route in result["routes"] if not route["feasible"])
+    assert len(calls) == 2
+
+
+def test_missing_toll_is_not_zero_and_truck_mode_never_falls_back(client, headers, monkeypatch, road_trip):
+    calls = setup_truck(monkeypatch, road_trip, include_tolls=False)
+    road_trip["road_guidance"]["max_toll_inr"] = 800
+    result = analyze(client, headers, road_trip)["route_optimization"]["data"]
+    assert result["recommended_route"] is None
+    assert result["provider_status"] == "truck_evidence_incomplete"
+    unknown = next(route for route in result["routes"] if route["truck_evidence"]["toll_status"] == "unavailable")
+    assert unknown["truck_evidence"]["toll_inr"] is None
+    monkeypatch.setenv("TRADEPILOT_OSRM_URL", "https://routes.example")
+    monkeypatch.setenv("TRADEPILOT_HERE_TRUCK_ENABLED", "false")
+    disabled = analyze(client, headers, road_trip)["route_optimization"]["data"]
+    assert disabled["provider_status"] == "not_configured" and disabled["routes"] == []
+    assert len(calls) == 2

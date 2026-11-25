@@ -13,6 +13,7 @@ import httpx
 
 from .models import RouteOptimizationOutput, ShipmentRequest
 from .tools import disruption_matches_leg
+from .truck_routing import HERE_REFERENCE, fetch_truck_routes
 
 
 ROUTING_REFERENCE = "https://project-osrm.org/docs/"
@@ -138,16 +139,21 @@ def _output(status, routes=()):
     routes = sorted(routes, key=lambda item: (
         not item["feasible"],
         {"low": 0, "elevated": 1, "high": 2, "unknown": 3}[item["weather"]["severity"]],
-        item["transit_hours_estimate"], item["distance_km"],
+        (item.get("truck_evidence") or {}).get("access_status") == "review_required",
+        item["transit_hours_estimate"],
+        (item.get("truck_evidence") or {}).get("toll_inr") or 0,
+        item["distance_km"],
     ))
     preferred = next((route for route in routes if route["feasible"]), None)
     return RouteOptimizationOutput(
         routes=routes, recommended_route=preferred, no_feasible_route=preferred is None,
         provenance="ESTIMATED", provider_status=status,
-        ranking_method="Among returned road alternatives, prefer complete forecasts and lower weather flags, then shorter modeled transit. Freight cost is unavailable.",
+        ranking_method="Filter by evidence, deadlines, restrictions and any toll budget. Prefer lower weather flags, fewer truck notices, shorter estimated transit, then lower comparable tolls. Freight cost is unavailable.",
         alternatives=[dict(evidence_ids=row["evidence_ids"], feasible=row["feasible"],
                            distance_km=row["distance_km"], transit_hours_estimate=row["transit_hours_estimate"],
                            weather_status=row["weather"]["status"], weather_severity=row["weather"]["severity"],
+                           toll_inr=(row.get("truck_evidence") or {}).get("toll_inr"),
+                           truck_access=(row.get("truck_evidence") or {}).get("access_status"),
                            reason=row["feasibility_reason"]) for row in routes],
     )
 
@@ -156,23 +162,33 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
     routing_base = os.getenv("TRADEPILOT_OSRM_URL", "").strip().rstrip("/")
     weather_url = os.getenv("TRADEPILOT_FORECAST_URL", "").strip()
     profile = os.getenv("TRADEPILOT_OSRM_PROFILE", "driving")
-    if not routing_base or not re.fullmatch(r"[A-Za-z0-9_-]+", profile):
-        return _output("not_configured")
     request = shipment.road_guidance
+    is_truck = request.truck is not None
+    here_key = os.getenv("TRADEPILOT_HERE_API_KEY", "").strip()
+    if is_truck:
+        if os.getenv("TRADEPILOT_HERE_TRUCK_ENABLED", "").casefold() != "true" or not here_key:
+            return _output("not_configured")
+    elif not routing_base or not re.fullmatch(r"[A-Za-z0-9_-]+", profile):
+        return _output("not_configured")
     start = (request.origin.longitude, request.origin.latitude)
     end = (request.destination.longitude, request.destination.latitude)
     coordinates = ";".join(f"{lon:.6f},{lat:.6f}" for lon, lat in (start, end))
     routes = []
     with httpx.Client(timeout=httpx.Timeout(5, connect=3), follow_redirects=False) as client:
         try:
-            response = client.get(f"{routing_base}/route/v1/{profile}/{coordinates}",
-                                  params=dict(alternatives=2, geometries="geojson", overview="full", annotations="duration"))
-            if response.status_code not in {200, 400}:
-                response.raise_for_status()
-            data = response.json()
+            if is_truck:
+                data = fetch_truck_routes(client, request, here_key)
+                response_status = 200
+            else:
+                response = client.get(f"{routing_base}/route/v1/{profile}/{coordinates}",
+                                      params=dict(alternatives=2, geometries="geojson", overview="full", annotations="duration"))
+                if response.status_code not in {200, 400}:
+                    response.raise_for_status()
+                data = response.json()
+                response_status = response.status_code
             if data.get("code") in {"NoRoute", "NoSegment"}:
                 return _output("no_route")
-            if response.status_code != 200 or data.get("code") != "Ok" or not isinstance(data.get("routes"), list):
+            if response_status != 200 or data.get("code") != "Ok" or not isinstance(data.get("routes"), list):
                 return _output("routing_unavailable")
             seen = set()
             for raw in data["routes"][:MAX_ROUTES]:
@@ -182,7 +198,9 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
                         continue
                     km = _number(raw["distance"], minimum=1, maximum=20_000_000) / 1000
                     hours = _number(raw["duration"], minimum=1, maximum=2_000_000) / 3600
-                    key = "OSRM-" + sha256(json.dumps([profile, shape]).encode()).hexdigest()[:20]
+                    prefix = "HERE-TRUCK-" if is_truck else "OSRM-"
+                    route_profile = request.truck.model_dump() if is_truck else profile
+                    key = prefix + sha256(json.dumps([route_profile, shape]).encode()).hexdigest()[:20]
                     if key in seen:
                         continue
                     signals = [signal for signal in shipment.disruptions
@@ -191,20 +209,20 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
                     clock = _segment_clock(raw, shape)
                     samples = _sample_route(shape, km, hours, request.departure_at, clock)
                     seen.add(key)
-                    routes.append((key, shape, km, hours, samples, signals, clock is not None))
+                    routes.append((key, shape, km, hours, samples, signals, clock is not None, raw.get("truck_evidence")))
                 except (TypeError, ValueError, KeyError, IndexError):
                     continue
-        except (httpx.HTTPError, ValueError, TypeError, AttributeError):
+        except (httpx.HTTPError, ValueError, TypeError, AttributeError, KeyError):
             return _output("routing_unavailable")
         if not routes:
             return _output("routing_unavailable" if data["routes"] else "no_route")
-        samples = [sample for _, _, _, _, points, _, _ in routes for sample in points]
+        samples = [sample for _, _, _, _, points, _, _, _ in routes for sample in points]
         try:
             fetched_at = _forecast(client, weather_url, samples)
         except (httpx.HTTPError, ValueError, TypeError):
             fetched_at = None
     options = []
-    for key, shape, km, hours, points, signals, has_clock in routes:
+    for key, shape, km, hours, points, signals, has_clock, truck in routes:
         coverage = sum(point["flag"] != "unavailable" for point in points)
         status = "complete" if coverage == len(points) else "partial" if coverage else "unavailable"
         severity = ("high" if any(point["flag"] == "high" for point in points) else
@@ -220,18 +238,37 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
             reasons.append("Modeled arrival misses the deadline")
         if any(signal.severity >= .95 for signal in signals):
             reasons.append("Reported disruption blocks this route")
+        if truck:
+            if truck["access_status"] == "restriction_reported":
+                reasons.append("Provider reported a truck restriction or critical notice")
+            if truck["traffic_status"] != "time_aware":
+                reasons.append("Provider did not return a comparable traffic baseline")
+            if truck["toll_status"] != "priced":
+                reasons.append("Provider did not return a complete INR toll price")
+            elif request.max_toll_inr is not None and truck["toll_inr"] > request.max_toll_inr:
+                reasons.append("Toll estimate exceeds the stated budget")
         options.append(dict(
             mode="road", distance_km=round(km, 2), transit_hours_estimate=round(hours, 3),
-            mode_feasible=True, deadline_feasible=deadline_ok, feasible=not reasons,
+            mode_feasible=not truck or truck["access_status"] != "restriction_reported",
+            deadline_feasible=deadline_ok, feasible=not reasons,
             feasibility_reason="; ".join(reasons) if reasons else
-            "Provider geometry and sampled forecast are available. Truck access and live traffic require confirmation.",
+            ("Truck profile, time-aware duration, INR toll estimate and sampled forecasts are available." if truck else
+             "Provider geometry and sampled forecast are available. Truck access and live traffic require confirmation."),
             risk_score_estimate={"low": .1, "elevated": .5, "high": .9, "unknown": .8}[severity],
-            provenance="ESTIMATED", distance_method="OSRM road geometry and modeled drive time; no live traffic adjustment.",
-            evidence_ids=[key], geometry_lon_lat=shape, source_references=[ROUTING_REFERENCE, WEATHER_REFERENCE],
+            provenance="ESTIMATED", distance_method=("HERE truck geometry and time-aware duration estimate." if truck else
+                                                     "OSRM road geometry and modeled drive time; no live traffic adjustment."),
+            evidence_ids=[key], geometry_lon_lat=shape,
+            source_references=[HERE_REFERENCE if truck else ROUTING_REFERENCE, WEATHER_REFERENCE],
+            truck_evidence=truck,
             disruption_ids=[signal.signal_id for signal in signals],
             weather=dict(status=status, severity=severity, retrieved_at_utc=fetched_at, samples=points,
                          sample_eta_method="segment_duration" if has_clock else "distance_interpolation"),
         ))
     statuses = {option["weather"]["status"] for option in options}
     provider_status = "available" if statuses == {"complete"} else "weather_unavailable" if statuses == {"unavailable"} else "weather_partial"
+    if is_truck and provider_status == "available" and any(
+        row["truck_evidence"]["traffic_status"] != "time_aware" or row["truck_evidence"]["toll_status"] != "priced"
+        for row in options
+    ):
+        provider_status = "truck_evidence_incomplete"
     return _output(provider_status, options)
