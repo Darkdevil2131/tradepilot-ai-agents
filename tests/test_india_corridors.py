@@ -95,10 +95,24 @@ def test_specific_road_closure_switches_kochi_to_detour():
 def test_inland_carrier_offer_and_road_transport_document(client, headers):
     data = json.loads(Path("examples/intelligent_shipment.json").read_text())
     data.update(origin="Delhi", destination="Kolkata", weight_kg=500, allowed_modes=["road"],
+                deadline=(datetime.now(timezone.utc) + timedelta(days=3)).isoformat(),
                 carrier_services=[dict(carrier_id="SOURCED-01", name="Submitted carrier", mode="road",
                                        origin="Delhi", destination="Kolkata", capacity_kg=1000,
-                                       source_reference="Operator bid reference TP-001")],
-                quotes=[dict(carrier_id="SOURCED-01", mode="road", currency="INR", amount=25000)])
+                                       source_reference="Operator lane reference TP-001")])
+    route = RouteOptimizationAgent().run(ShipmentRequest(**data)).recommended_route
+    quote = dict(carrier_id="SOURCED-01", mode="road", currency="INR", amount=25000,
+                 source_reference="Operator bid TP-002", route_leg_ids=route.evidence_ids,
+                 transit_hours=48, quoted_capacity_kg=700, door_to_door_total=True,
+                 valid_until=(datetime.now(timezone.utc) + timedelta(days=1)).isoformat())
+    data["quotes"] = [
+        dict(quote, amount=5000, transit_hours=200),
+        dict(quote, amount=5500, route_leg_ids=["UNRELATED-ROAD-LEG"]),
+        dict(quote, amount=6000, quoted_capacity_kg=100),
+        dict(quote, amount=6500, valid_until=(datetime.now(timezone.utc) - timedelta(days=1)).isoformat()),
+        dict(quote, amount=7000, door_to_door_total=False),
+        dict(carrier_id="DEMO-ROAD-01", mode="road", currency="INR", amount=1),
+        quote,
+    ]
     data["documents"][2] = {"document_type": "consignment_note",
                             "raw_text": "Consignment Number: DEMO-1\nConsignee: Buyer Ltd"}
     response = client.post("/api/v1/shipments/analyze", json=data, headers=headers)
@@ -109,7 +123,26 @@ def test_inland_carrier_offer_and_road_transport_document(client, headers):
     assert (carrier["carrier_id"], carrier["history_confidence"], carrier["contact"]) == ("SOURCED-01", "unknown", {})
     decision = agents["logistics_orchestrator"]["data"]["decision"]
     assert decision["status"] == "ready_for_human_approval"
+    assert decision["commercial_evidence"] == "submitted"
     assert decision["candidate"]["amount"] == 25000
+    assert decision["candidate"]["evidence"]["route_leg_ids"] == route.evidence_ids
+    assessments = agents["market_procurement"]["data"]["quote_assessments"]
+    assert [row["reasons"] for row in assessments] == [
+        ["quoted_transit_misses_deadline"], ["quote_route_mismatch"],
+        ["quote_capacity_unconfirmed_or_insufficient"], ["quote_expired"],
+        ["door_to_door_scope_unconfirmed"], ["demo_carrier_excluded_from_submitted_offer_comparison"], [],
+    ]
+    data["disruptions"] = [dict(signal_id="required-leg-closed", severity=1,
+                                affected_leg_ids=[route.evidence_ids[0]])]
+    changed = client.post("/api/v1/shipments/analyze", json=data, headers=headers).json()["agents"]
+    assert changed["route_optimization"]["data"]["recommended_route"] is not None
+    assert changed["logistics_orchestrator"]["data"]["decision"]["candidate"] is None
+    assert "quote_route_mismatch" in changed["market_procurement"]["data"]["quote_assessments"][-1]["reasons"]
+    data.pop("disruptions")
+    data.update(commercial_mode="submitted", carrier_services=[], quotes=[data["quotes"][-2]])
+    without_evidence = client.post("/api/v1/shipments/analyze", json=data, headers=headers).json()["agents"]
+    assert without_evidence["logistics_orchestrator"]["data"]["decision"]["commercial_evidence"] == "unavailable"
+    assert without_evidence["market_procurement"]["data"]["eligible_quotes"] == 0
     data["documents"][0]["fields"] = {"total": 99999}
     conflict = client.post("/api/v1/documents/validate", json={"shipment": data}, headers=headers).json()
     assert not conflict["valid"] and any("differs between document text" in issue for issue in conflict["issues"])

@@ -137,6 +137,17 @@ references. Coastal and rail service schedules still use synthetic fixtures.
 
 Optional `carrier_services` entries let operators submit exact directional
 lane, mode, capacity and a source reference for a real carrier quote.
+For this workflow, first analyze the shipment to obtain ordered
+`recommended_route.evidence_ids`. Resubmit with `carrier_services` and a quote
+containing those IDs in `route_leg_ids`, a `source_reference`, `valid_until`,
+`transit_hours`, `quoted_capacity_kg`, and `door_to_door_total: true`.
+The result includes `market_procurement.data.quote_assessments` for the UI
+to show why each offer was rejected. Check the orchestrator's
+`decision.commercial_evidence` to distinguish submitted offers from demo
+tariffs. If a closure changes the route, the old quote requires a new match.
+Set `commercial_mode: "submitted"` for real shipments so the workflow
+requires submitted evidence even while carrier offers are still outstanding.
+Shipment-wide quotes cannot qualify a split shipment with separately sourced legs.
 Missing contacts and history stay empty or unknown. For domestic road/rail-only
 requests, submit a `consignment_note` with its number and consignee. A conflict
 between raw labelled document text and explicit fields blocks validation.

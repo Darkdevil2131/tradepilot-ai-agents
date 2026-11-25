@@ -91,6 +91,10 @@ def explain_decision(shipment, results, decision) -> StrategicExplanation:
         )
         report.comparisons = [dict(**quote, evidence=f"/agents/market_procurement/data/ranked_quotes/{index}")
                               for index, quote in enumerate(procurement.get("ranked_quotes", []))]
+        if candidate.get("evidence"):
+            report.conclusion += " The submitted quote covers the selected route and meets the configured commercial checks."
+        else:
+            report.conclusion += " The carrier match uses demo evidence."
     if candidate:
         report.next_actions.append(dict(action="Review evidence and approve the selected arrangement.",
                                         owner="authorized approver", reason="A recommendation requires human authorization."))

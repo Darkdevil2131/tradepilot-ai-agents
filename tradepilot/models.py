@@ -22,6 +22,11 @@ class Quote(StrictModel):
     valid_until: datetime | None = None
     includes_insurance: bool = False
     provenance: Provenance = Provenance.USER_PROVIDED
+    source_reference: str | None = Field(default=None, min_length=1, max_length=300)
+    route_leg_ids: list[str] = Field(default_factory=list, max_length=64)
+    transit_hours: float | None = Field(default=None, gt=0, le=10_000)
+    quoted_capacity_kg: float | None = Field(default=None, gt=0, le=1_000_000)
+    door_to_door_total: bool = False
 
 class ShippingDocument(StrictModel):
     document_type: Literal["commercial_invoice", "bill_of_lading", "packing_list", "certificate_of_origin", "dangerous_goods_declaration", "consignment_note"]
@@ -96,6 +101,7 @@ class ShipmentRequest(StrictModel):
     allowed_modes: list[Literal["air", "sea", "road", "rail"]] = Field(default_factory=lambda: ["air", "sea", "road"], min_length=1, max_length=4)
     quotes: list[Quote] = Field(default_factory=list, max_length=50)
     carrier_services: list[SubmittedCarrierService] = Field(default_factory=list, max_length=50)
+    commercial_mode: Literal["demo", "submitted"] = "demo"
     documents: list[ShippingDocument] = Field(default_factory=list, max_length=20)
     incoterm: str | None = Field(default=None, max_length=20)
     optimization: OptimizationPreferences = Field(default_factory=OptimizationPreferences)
@@ -103,6 +109,11 @@ class ShipmentRequest(StrictModel):
     supplier_offers: list[SupplierOffer] = Field(default_factory=list, max_length=50)
     required_certifications: list[str] = Field(default_factory=list, max_length=30)
     required_quantity: float | None = Field(default=None, gt=0, le=1_000_000_000)
+
+    @property
+    def requires_submitted_offers(self) -> bool:
+        return (self.commercial_mode == "submitted" or bool(self.carrier_services)
+                or any(quote.source_reference for quote in self.quotes))
 
     @field_validator("origin", "destination")
     @classmethod
@@ -267,6 +278,13 @@ class ProcurementRecommendation(StrictModel):
     amount: float = Field(gt=0)
     currency: str
     requires_human_approval: Literal[True]
+    evidence: dict | None = None
+
+class QuoteAssessment(StrictModel):
+    quote_index: int
+    carrier_id: str
+    eligible: bool
+    reasons: list[str] = Field(default_factory=list)
 
 class ProcurementOutput(StrictModel):
     sourced_plan: dict | None = None
@@ -275,6 +293,7 @@ class ProcurementOutput(StrictModel):
     ranked_quotes: list[RankedQuote]
     recommendation: ProcurementRecommendation | None
     recommendation_warning: str | None = None
+    quote_assessments: list[QuoteAssessment] = Field(default_factory=list)
     ranked_supplier_offers: list[dict] = Field(default_factory=list)
     excluded_supplier_offers: list[dict] = Field(default_factory=list)
     supplier_recommendation: dict | None = None

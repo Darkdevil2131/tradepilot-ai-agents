@@ -100,24 +100,21 @@ class LogisticsOrchestrator:
     def _documents(self,s): return self._safe(s,"document_intelligence",lambda:self.documents.run(s["shipment"]))
     def _procurement(self,s):
         route=s.get("results",{}).get("route_optimization")
-        modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
+        routes = route.data.get("routes", []) if route and route.status == "completed" else []
         carrier = s["results"]["carrier_research"]
-        supported = {(row["carrier_id"], row["mode"]) for row in carrier.data.get("carriers", [])}
         shipment = s["shipment"]
-        matching = [q for q in shipment.quotes if (q.carrier_id, q.mode) in supported]
-        filtered = shipment.model_copy(update={"quotes": matching})
         def compare_supported():
-            decision = self.procurement.run(filtered, modes)
+            decision = self.procurement.assess_shipment_offers(shipment, routes, carrier.data.get("carriers", []))
             candidates = []
             for plan in carrier.data.get("leg_plans", []):
                 if all(leg["freight_inr"] is not None for leg in plan["legs"]):
                     total = round(sum(leg["freight_inr"] for leg in plan["legs"]), 2)
                     candidates.append(dict(**plan, freight_inr=total, total_impact_inr=round(total+plan["delay_loss_inr"],2),
                                            provenance="SYNTHETIC", requires_human_approval=True))
-            decision.sourced_plan = min(candidates, key=lambda p:p["total_impact_inr"], default=None)
-            decision.quotes_received = len(shipment.quotes)
-            if len(matching) < len(shipment.quotes):
-                decision.note += " Quotes without an eligible carrier/mode match were excluded."
+            if not shipment.requires_submitted_offers:
+                decision.sourced_plan = min(candidates, key=lambda p:p["total_impact_inr"], default=None)
+            elif carrier.data.get("leg_plans"):
+                decision.recommendation_warning = "Submitted shipment-wide offers do not cover split legs. Supply leg-level evidence before commercial approval."
             if any(flag["severity"] == "high" for flag in s["results"]["risk_compliance"].data.get("flags", [])) or s["results"]["risk_compliance"].status != "completed":
                 decision.sourced_plan = None
                 decision.recommendation = None
@@ -160,7 +157,9 @@ class LogisticsOrchestrator:
         if candidate is None:
             gates.append(DecisionGate(gate="commercial_offer", status="blocked", reason="No eligible provider-backed plan or quote is available.", evidence_path="/agents/market_procurement/data"))
         else:
-            gates.append(DecisionGate(gate="commercial_offer", status="passed", reason="The selected candidate has eligible synthetic tariff evidence or a matched submitted quote.", evidence_path="/agents/market_procurement/data"))
+            reason = ("The submitted quote matches a feasible leg chain and passed scope, capacity, timing and expiry checks."
+                      if candidate.get("evidence") else "The modeled candidate uses demo carrier or tariff evidence.")
+            gates.append(DecisionGate(gate="commercial_offer", status="passed", reason=reason, evidence_path="/agents/market_procurement/data"))
         if not documents.get("valid", False):
             gates.append(DecisionGate(gate="documents", status="blocked", reason="Required documents are missing or contain unresolved inconsistencies.", evidence_path="/agents/document_intelligence/data"))
         else:
@@ -175,6 +174,7 @@ class LogisticsOrchestrator:
         results["logistics_orchestrator"].data["decision"] = {
             "status": "incomplete" if failed else "blocked" if blocked else "ready_for_human_approval" if candidate else "no_supported_offer",
             "candidate": candidate if not failed and not blocked else None,
+            "commercial_evidence": ("submitted" if candidate.get("evidence") else "demo") if candidate and not blocked and not failed else "unavailable",
             "review_items": review,
             "requires_human_approval": True,
             "gates": [gate.model_dump() for gate in gates],
