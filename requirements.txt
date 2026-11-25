@@ -6,6 +6,7 @@ google-genai==1.16.1
 python-dotenv==1.2.4
 pytest==9.2.0
 httpx==0.28.1
+flexpolyline==0.1.0
 python-multipart==0.0.34
 pypdf==7.1.1
 pdfplumber==0.11.11

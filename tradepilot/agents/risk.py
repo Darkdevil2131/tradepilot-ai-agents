@@ -1,5 +1,5 @@
 from ..models import ShipmentRequest, RiskComplianceOutput
-from ..tools import contains_dangerous_goods_keyword
+from ..tools import CITY_COUNTRIES, contains_dangerous_goods_keyword
 
 
 class RiskComplianceAgent:
@@ -17,6 +17,7 @@ class RiskComplianceAgent:
             flags.append({"code": "INCOTERM_NOT_PROVIDED", "severity": "medium", "reason": "Incoterm is absent; allocation of freight, insurance, and customs responsibilities is unclear."})
 
         disruption_summary = []
+        unaffected_plan_exists = any(option.get("feasible") for option in (route_options or []))
         for signal in shipment.disruptions:
             if not signal.active:
                 continue
@@ -31,7 +32,7 @@ class RiskComplianceAgent:
             if signal.severity >= 0.75:
                 flags.append({
                     "code": "HIGH_DISRUPTION_SIGNAL",
-                    "severity": "high" if signal.severity >= 0.95 else "medium",
+                    "severity": "high" if signal.severity >= 0.95 and not unaffected_plan_exists else "medium",
                     "reason": f"Active disruption {signal.signal_id} has severity {signal.severity:.2f}; affected routes require human confirmation.",
                 })
 
@@ -48,7 +49,11 @@ class RiskComplianceAgent:
                 if selected.get("provenance") == "SYNTHETIC":
                     flags.append({"code": "SYNTHETIC_ROUTE_EVIDENCE", "severity": "medium", "reason": "Route connectivity, capacity, duration, and cost derive from the synthetic network fixture."})
 
-        flags.append({"code": "CUSTOMS_VERIFICATION_REQUIRED", "severity": "medium", "reason": "No live customs, sanctions, tariff, or jurisdiction screening is configured. Verify current requirements with authoritative sources."})
+        if all(CITY_COUNTRIES.get(city.casefold()) == "india" for city in (shipment.origin, shipment.destination)):
+            flags.append({"code": "DOMESTIC_DOCUMENT_REVIEW_REQUIRED", "severity": "medium",
+                          "reason": "Confirm applicable domestic invoice, e-way bill and transport-document requirements. No live GST verification is configured."})
+        else:
+            flags.append({"code": "CUSTOMS_VERIFICATION_REQUIRED", "severity": "medium", "reason": "No live customs, sanctions, tariff, or jurisdiction screening is configured. Verify current requirements with authoritative sources."})
         return RiskComplianceOutput(
             flags=flags,
             human_review_required=bool(flags),

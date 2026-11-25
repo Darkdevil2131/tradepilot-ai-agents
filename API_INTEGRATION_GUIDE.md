@@ -110,9 +110,130 @@ Submit `examples/impact_comparison.json` to the shipment analysis endpoint. Read
 the critical weight. Each portion lists its legs, freight charges and delivery
 time. Options are ranked by freight plus the cost of waiting for the critical
 portion. A target date can be missed at a cost; a shipment deadline is a hard
-constraint. The fixture covers Dubai to Mumbai, including road transfers.
+constraint. The original Dubai–Mumbai fixture remains available. India split
+scenarios use explicit bidirectional synthetic corridors for Kochi–Chennai,
+Kochi–Bengaluru, Chennai–Bengaluru, Mumbai–Pune, Mumbai–Delhi,
+Mumbai–Ahmedabad, Hyderabad–Bengaluru, Kolkata–Bhubaneswar,
+Chennai–Visakhapatnam, and Delhi–Jaipur. Modes vary by corridor. Split plans
+include road pickup and delivery, so include `road` in `allowed_modes`.
 Set `closed_leg_ids` or `freight_multiplier` within `impact_scenario` to
 compare disruptions and prices. Empty options include rejection reasons.
+Ordinary route comparisons expose `cost_estimate_inr` on modeled India
+corridors. The legacy USD field uses a fixed illustrative INR 85/USD
+conversion. Quoted amounts retain their own currency. With road disabled,
+ordinary air, sea, and rail options cover terminal-to-terminal movement only.
+Road routes use 57 selected hubs and 70 bidirectional planning links,
+including major national corridors and regional feeders. The agent can use
+these linked roads even where no dedicated multimodal fixture exists.
+Corridor references describe broad geography. Estimated distances, drive
+times, capacities, and modeled tariffs do not verify truck access, traffic,
+tolls or actual pricing. A split scenario without any connected option in the
+offline model returns a blocked decision.
+
+Send a disruption with `affected_leg_ids` set to directional IDs from
+`routes[].evidence_ids` to target a road segment. The opposite direction has
+its own ID. Each route option includes the chain of waypoints and its evidence
+references. Coastal and rail service schedules still use synthetic fixtures.
+
+Optional `carrier_services` entries let operators submit exact directional
+lane, mode, capacity and a source reference for a real carrier quote.
+For this workflow, first analyze the shipment to obtain ordered
+`recommended_route.evidence_ids`. Resubmit with `carrier_services` and a quote
+containing those IDs in `route_leg_ids`, a `source_reference`, `valid_until`,
+`transit_hours`, `quoted_capacity_kg`, and `door_to_door_total: true`.
+The result includes `market_procurement.data.quote_assessments` for the UI
+to show why each offer was rejected. Check the orchestrator's
+`decision.commercial_evidence` to distinguish submitted offers from demo
+tariffs. If a closure changes the route, the old quote requires a new match.
+Set `commercial_mode: "submitted"` for real shipments so the workflow
+requires submitted evidence even while carrier offers are still outstanding.
+Shipment-wide quotes cannot qualify a split shipment with separately sourced legs.
+Missing contacts and history stay empty or unknown. For domestic road/rail-only
+requests, submit a `consignment_note` with its number and consignee. A conflict
+between raw labelled document text and explicit fields blocks validation.
+
+## Provider geometry and road weather
+
+Configure `TRADEPILOT_OSRM_URL` with the base of an authorized OSRM deployment
+and `TRADEPILOT_FORECAST_URL` with an authorized Open-Meteo-compatible
+`/v1/forecast` endpoint. Public Open-Meteo hosting limits free usage to
+eligible non-commercial workloads. OSRM can be self-hosted. No default
+endpoint calls are enabled. Use endpoints approved to receive shipment
+coordinates. Keep both endpoints server-side.
+
+For a road-only shipment, add `road_guidance` to the normal analysis request:
+
+```json
+{
+  "origin": "Kochi",
+  "destination": "Chennai",
+  "cargo_description": "Machine parts",
+  "weight_kg": 500,
+  "allowed_modes": ["road"],
+  "road_guidance": {
+    "origin": {"latitude": 9.9312, "longitude": 76.2673},
+    "destination": {"latitude": 13.0827, "longitude": 80.2707}
+  }
+}
+```
+
+Coordinates should be the actual pickup and delivery points. Optional
+`road_guidance.departure_at` takes a timezone-aware timestamp and defaults to
+request time. The result includes longitude/latitude route geometry, modeled
+drive time, and hourly precipitation, gust, visibility and weather code at
+sampled points. Sample ETAs interpolate provider segment times when available
+and use distance interpolation otherwise. Forecasts use the next hour
+boundary. Coverage is sampled, up to 12 points per returned
+route, over the provider's configured seven-day forecast. The ranking checks
+coverage, planning weather flags, supplied disruptions and deadlines before
+comparing modeled transit. Critical weather flags and missing coverage
+withhold the recommendation for that option. These are planning flags.
+
+Display `provider_status`, the weather series and the orchestrator's
+`route_weather` gate. Use the route ID in `evidence_ids` when binding a carrier
+quote to a provider route. Reported disruptions can target that ID or the
+origin/destination names. Provider mode requires submitted commercial
+evidence. It does not estimate freight prices, tolls, live traffic or
+truck-specific restrictions. Weather attribution: Open-Meteo. Routing
+attribution: OSRM and OpenStreetMap contributors.
+
+## Truck traffic, tolls, and restriction evidence
+
+Add a truck profile to `road_guidance` for truck-specific routing:
+
+```json
+{
+  "truck": {
+    "height_cm": 350,
+    "width_cm": 240,
+    "length_cm": 850,
+    "tare_weight_kg": 4200,
+    "loaded_weight_kg": 7000,
+    "gross_weight_rating_kg": 9000,
+    "max_axle_weight_kg": 4000,
+    "axle_count": 2
+  },
+  "max_toll_inr": 800
+}
+```
+
+This mode uses the HERE Routing API v8 with the truck dimensions, loaded
+weight, gross rating and axle data. The API requests time-aware duration
+and INR toll totals. Configure `TRADEPILOT_HERE_TRUCK_ENABLED=true` and
+`TRADEPILOT_HERE_API_KEY` only after confirming that the account and usage
+are authorized and no-charge, including the additional toll transaction
+and expected request volume. The feature is off by default.
+
+Read `routes[].truck_evidence` for the provider duration, baseline,
+time-aware delta, toll estimate and restriction notice codes. Time-aware
+estimates can use live or historical traffic. Posted restrictions and toll
+conditions still require operational confirmation. A missing toll stays
+unknown. A reported violation, a missing comparable baseline or toll price,
+or an exceeded toll budget prevents that alternative from being selected.
+Other provider notices are flagged for human review. The route still goes
+through the existing weather and submitted-quote checks. A toll estimate
+is separate from the all-in shipment quote. Truck mode does not substitute
+OSRM if the truck provider cannot supply evidence.
 Carrier Research assigns synthetic leg tariffs using combined weight on each leg. See carrier_research.data.leg_plans and market_procurement.data.sourced_plan for the priced plan. Shipment-wide quotes have no leg scope and cannot replace these tariffs.
 
 ## Synthetic carrier evaluation

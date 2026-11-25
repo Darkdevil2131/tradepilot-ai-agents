@@ -18,7 +18,6 @@ from .notifications import NotificationConfigurationError, SMTPNotificationAdapt
 from .operations import OperationsStore
 from .platform import Metrics, Principal, RateLimiter, authenticate, configured_keys, role_allows
 from .storage import ShipmentStore, create_shipment_store
-from .tools import validate_documents
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL","INFO"))
 logger=logging.getLogger("tradepilot")
@@ -131,7 +130,7 @@ def get_shipment(shipment_id:str):
 
 @app.post("/api/v1/documents/validate",response_model=DocumentValidationResponse,tags=["documents"],dependencies=[Depends(require_api_key)])
 def validate_shipment_documents(payload:DocumentValidationRequest):
-    result=validate_documents(payload.shipment)
+    result=orchestrator.documents.run(payload.shipment).model_dump(exclude={"extracted_fields"})
     return DocumentValidationResponse(shipment_id=payload.shipment.shipment_id,**result)
 
 

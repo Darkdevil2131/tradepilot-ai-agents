@@ -76,6 +76,9 @@ class LogisticsOrchestrator:
     def _carrier(self,s):
         route=s.get("results",{}).get("route_optimization")
         modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
+        if route and route.status == "completed" and route.data.get("impact_comparison"):
+            modes = {leg["mode"] for option in route.data["impact_comparison"]["options"]
+                     for portion in option["portions"] for leg in portion["legs"]}
         def investigate():
             result = self.carrier.run(s["shipment"], modes)
             comparison = route.data.get("impact_comparison") if route else None
@@ -88,29 +91,30 @@ class LogisticsOrchestrator:
         options = route.data.get("routes") if route and route.status == "completed" else None
         if route and route.status == "completed" and route.data.get("impact_comparison"):
             comparison = route.data["impact_comparison"]
-            options = [{"feasible": bool(comparison["options"]), "provenance": "SYNTHETIC", "risk_score_estimate": 0.2}]
+            options = [
+                dict(feasible=True, provenance="SYNTHETIC",
+                     disruption_ids=sorted({signal for portion in row["portions"] for signal in portion["disruption_ids"]}))
+                for row in comparison["options"]
+            ]
         return self._safe(s,"risk_compliance",lambda:self.risk.run(s["shipment"], options))
     def _documents(self,s): return self._safe(s,"document_intelligence",lambda:self.documents.run(s["shipment"]))
     def _procurement(self,s):
         route=s.get("results",{}).get("route_optimization")
-        modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
+        routes = route.data.get("routes", []) if route and route.status == "completed" else []
         carrier = s["results"]["carrier_research"]
-        supported = {(row["carrier_id"], row["mode"]) for row in carrier.data.get("carriers", [])}
         shipment = s["shipment"]
-        matching = [q for q in shipment.quotes if (q.carrier_id, q.mode) in supported]
-        filtered = shipment.model_copy(update={"quotes": matching})
         def compare_supported():
-            decision = self.procurement.run(filtered, modes)
+            decision = self.procurement.assess_shipment_offers(shipment, routes, carrier.data.get("carriers", []))
             candidates = []
             for plan in carrier.data.get("leg_plans", []):
                 if all(leg["freight_inr"] is not None for leg in plan["legs"]):
                     total = round(sum(leg["freight_inr"] for leg in plan["legs"]), 2)
                     candidates.append(dict(**plan, freight_inr=total, total_impact_inr=round(total+plan["delay_loss_inr"],2),
                                            provenance="SYNTHETIC", requires_human_approval=True))
-            decision.sourced_plan = min(candidates, key=lambda p:p["total_impact_inr"], default=None)
-            decision.quotes_received = len(shipment.quotes)
-            if len(matching) < len(shipment.quotes):
-                decision.note += " Quotes without an eligible carrier/mode match were excluded."
+            if not shipment.requires_submitted_offers:
+                decision.sourced_plan = min(candidates, key=lambda p:p["total_impact_inr"], default=None)
+            elif carrier.data.get("leg_plans"):
+                decision.recommendation_warning = "Submitted shipment-wide offers do not cover split legs. Supply leg-level evidence before commercial approval."
             if any(flag["severity"] == "high" for flag in s["results"]["risk_compliance"].data.get("flags", [])) or s["results"]["risk_compliance"].status != "completed":
                 decision.sourced_plan = None
                 decision.recommendation = None
@@ -136,6 +140,8 @@ class LogisticsOrchestrator:
         review.extend(flag["reason"] for flag in risk.get("flags", []))
         if shipment.dimensions_cm is None:
             review.append("Supply largest package dimensions to verify service fit.")
+        if shipment.road_guidance:
+            review.append("Confirm posted restrictions, toll payment terms, and current road conditions with the carrier before dispatch.")
         candidate = commercial.get("sourced_plan") or commercial.get("recommendation")
         gates = []
         route_data = results["route_optimization"].data
@@ -149,11 +155,39 @@ class LogisticsOrchestrator:
         elif not has_feasible_route:
             gates.append(DecisionGate(gate="route_feasibility", status="blocked", reason="No route satisfies the configured shipment constraints.", evidence_path="/agents/route_optimization/data"))
         else:
-            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason="At least one route passed the configured route and capacity checks.", evidence_path="/agents/route_optimization/data"))
+            reason = ("A road alternative has provider geometry and passed the configured weather and deadline checks."
+                      if shipment.road_guidance else "At least one route passed the configured route and capacity checks.")
+            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason=reason, evidence_path="/agents/route_optimization/data"))
+        if shipment.road_guidance:
+            preferred = route_data.get("recommended_route") or {}
+            quoted_ids = ((candidate or {}).get("evidence") or {}).get("route_leg_ids")
+            if quoted_ids:
+                preferred = next((option for option in route_data.get("routes", [])
+                                  if option["evidence_ids"] == quoted_ids), preferred)
+            weather = preferred.get("weather") or {}
+            provider_status = route_data.get("provider_status") or "routing_unavailable"
+            weather_status = "blocked" if not preferred else "review_required" if weather.get("severity") == "elevated" else "passed"
+            gates.append(DecisionGate(
+                gate="route_weather", status=weather_status,
+                reason=f"Provider status: {provider_status}. Selected route forecast flag: {weather.get('severity', 'unavailable')}.",
+                evidence_path="/agents/route_optimization/data",
+            ))
+            if shipment.road_guidance.truck:
+                truck = preferred.get("truck_evidence") or {}
+                truck_status = ("blocked" if not truck else "review_required"
+                                if truck["access_status"] == "review_required" else "passed")
+                gates.append(DecisionGate(
+                    gate="truck_route_evidence", status=truck_status,
+                    reason="Truck eligibility is based on provider notices and the supplied vehicle profile."
+                    if truck else "No selectable alternative has complete truck route evidence within the stated constraints.",
+                    evidence_path="/agents/route_optimization/data",
+                ))
         if candidate is None:
             gates.append(DecisionGate(gate="commercial_offer", status="blocked", reason="No eligible provider-backed plan or quote is available.", evidence_path="/agents/market_procurement/data"))
         else:
-            gates.append(DecisionGate(gate="commercial_offer", status="passed", reason="The selected candidate has eligible synthetic tariff evidence or a matched submitted quote.", evidence_path="/agents/market_procurement/data"))
+            reason = ("The submitted quote matches a feasible leg chain and passed scope, capacity, timing and expiry checks."
+                      if candidate.get("evidence") else "The modeled candidate uses demo carrier or tariff evidence.")
+            gates.append(DecisionGate(gate="commercial_offer", status="passed", reason=reason, evidence_path="/agents/market_procurement/data"))
         if not documents.get("valid", False):
             gates.append(DecisionGate(gate="documents", status="blocked", reason="Required documents are missing or contain unresolved inconsistencies.", evidence_path="/agents/document_intelligence/data"))
         else:
@@ -168,6 +202,7 @@ class LogisticsOrchestrator:
         results["logistics_orchestrator"].data["decision"] = {
             "status": "incomplete" if failed else "blocked" if blocked else "ready_for_human_approval" if candidate else "no_supported_offer",
             "candidate": candidate if not failed and not blocked else None,
+            "commercial_evidence": ("submitted" if candidate.get("evidence") else "demo") if candidate and not blocked and not failed else "unavailable",
             "review_items": review,
             "requires_human_approval": True,
             "gates": [gate.model_dump() for gate in gates],
