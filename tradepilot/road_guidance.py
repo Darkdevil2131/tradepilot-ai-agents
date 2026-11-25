@@ -174,7 +174,11 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
     end = (request.destination.longitude, request.destination.latitude)
     coordinates = ";".join(f"{lon:.6f},{lat:.6f}" for lon, lat in (start, end))
     routes = []
-    with httpx.Client(timeout=httpx.Timeout(5, connect=3), follow_redirects=False) as client:
+    try:
+        provider_client = httpx.Client(timeout=httpx.Timeout(5, connect=3), follow_redirects=False)
+    except (ImportError, ValueError):
+        return _output("routing_unavailable")
+    with provider_client as client:
         try:
             if is_truck:
                 data = fetch_truck_routes(client, request, here_key)
