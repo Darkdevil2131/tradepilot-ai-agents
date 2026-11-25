@@ -123,6 +123,18 @@ def test_unconfigured_provider_does_not_return_offline_route(client, headers, mo
     assert routes["routes"] == []
 
 
+def test_transport_setup_failure_returns_provider_status(client, headers, monkeypatch, road_trip):
+    def misconfigured_client(**kwargs):
+        raise ImportError("provider transport could not initialize")
+
+    monkeypatch.setenv("TRADEPILOT_OSRM_URL", "https://routes.example")
+    monkeypatch.setattr(road_guidance, "httpx", SimpleNamespace(Client=misconfigured_client, Timeout=httpx.Timeout))
+    agents = analyze(client, headers, road_trip)
+    assert agents["route_optimization"]["status"] == "completed"
+    assert agents["route_optimization"]["data"]["provider_status"] == "routing_unavailable"
+    assert agents["logistics_orchestrator"]["data"]["decision"]["candidate"] is None
+
+
 def setup_truck(monkeypatch, road_trip, include_tolls=True):
     from flexpolyline import encode
 
