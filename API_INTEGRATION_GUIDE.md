@@ -151,6 +151,51 @@ Shipment-wide quotes cannot qualify a split shipment with separately sourced leg
 Missing contacts and history stay empty or unknown. For domestic road/rail-only
 requests, submit a `consignment_note` with its number and consignee. A conflict
 between raw labelled document text and explicit fields blocks validation.
+
+## Provider geometry and road weather
+
+Configure `TRADEPILOT_OSRM_URL` with the base of an authorized OSRM deployment
+and `TRADEPILOT_FORECAST_URL` with an authorized Open-Meteo-compatible
+`/v1/forecast` endpoint. Public Open-Meteo hosting limits free usage to
+eligible non-commercial workloads. OSRM can be self-hosted. No default
+endpoint calls are enabled. Use endpoints approved to receive shipment
+coordinates. Keep both endpoints server-side.
+
+For a road-only shipment, add `road_guidance` to the normal analysis request:
+
+```json
+{
+  "origin": "Kochi",
+  "destination": "Chennai",
+  "cargo_description": "Machine parts",
+  "weight_kg": 500,
+  "allowed_modes": ["road"],
+  "road_guidance": {
+    "origin": {"latitude": 9.9312, "longitude": 76.2673},
+    "destination": {"latitude": 13.0827, "longitude": 80.2707}
+  }
+}
+```
+
+Coordinates should be the actual pickup and delivery points. Optional
+`road_guidance.departure_at` takes a timezone-aware timestamp and defaults to
+request time. The result includes longitude/latitude route geometry, modeled
+drive time, and hourly precipitation, gust, visibility and weather code at
+sampled points. Sample ETAs interpolate provider segment times when available
+and use distance interpolation otherwise. Forecasts use the next hour
+boundary. Coverage is sampled, up to 12 points per returned
+route, over the provider's configured seven-day forecast. The ranking checks
+coverage, planning weather flags, supplied disruptions and deadlines before
+comparing modeled transit. Critical weather flags and missing coverage
+withhold the recommendation for that option. These are planning flags.
+
+Display `provider_status`, the weather series and the orchestrator's
+`route_weather` gate. Use the route ID in `evidence_ids` when binding a carrier
+quote to a provider route. Reported disruptions can target that ID or the
+origin/destination names. Provider mode requires submitted commercial
+evidence. It does not estimate freight prices, tolls, live traffic or
+truck-specific restrictions. Weather attribution: Open-Meteo. Routing
+attribution: OSRM and OpenStreetMap contributors.
 Carrier Research assigns synthetic leg tariffs using combined weight on each leg. See carrier_research.data.leg_plans and market_procurement.data.sourced_plan for the priced plan. Shipment-wide quotes have no leg scope and cannot replace these tariffs.
 
 ## Synthetic carrier evaluation

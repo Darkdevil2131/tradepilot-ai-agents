@@ -86,8 +86,27 @@ class ImpactScenario(StrictModel):
     closed_leg_ids: list[str] = Field(default_factory=list, max_length=50)
     freight_multiplier: float = Field(default=1, gt=0, le=10)
 
+class RoadCoordinate(StrictModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+
+
+class RoadGuidanceRequest(StrictModel):
+    origin: RoadCoordinate
+    destination: RoadCoordinate
+    departure_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    @field_validator("departure_at")
+    @classmethod
+    def utc_departure(cls, value: datetime) -> datetime:
+        if value.tzinfo is None:
+            raise ValueError("departure_at must include a timezone")
+        return value.astimezone(timezone.utc)
+
+
 class ShipmentRequest(StrictModel):
     impact_scenario: ImpactScenario | None = None
+    road_guidance: RoadGuidanceRequest | None = None
     shipment_id: str | None = Field(default=None, min_length=3, max_length=80, pattern=r"^[A-Za-z0-9_-]+$")
     origin: str = Field(min_length=2, max_length=100)
     destination: str = Field(min_length=2, max_length=100)
@@ -112,7 +131,7 @@ class ShipmentRequest(StrictModel):
 
     @property
     def requires_submitted_offers(self) -> bool:
-        return (self.commercial_mode == "submitted" or bool(self.carrier_services)
+        return (self.road_guidance is not None or self.commercial_mode == "submitted" or bool(self.carrier_services)
                 or any(quote.source_reference for quote in self.quotes))
 
     @field_validator("origin", "destination")
@@ -144,6 +163,11 @@ class ShipmentRequest(StrictModel):
             raise ValueError("origin and destination must differ")
         if len(set(self.allowed_modes)) != len(self.allowed_modes):
             raise ValueError("allowed_modes must not contain duplicates")
+        if self.road_guidance:
+            if self.impact_scenario or self.allowed_modes != ["road"]:
+                raise ValueError("road_guidance requires road-only service without a split impact_scenario")
+            if self.road_guidance.origin == self.road_guidance.destination:
+                raise ValueError("road_guidance endpoints must have distinct coordinates")
         service_keys = {(row.carrier_id, row.mode) for row in self.carrier_services}
         if len(service_keys) != len(self.carrier_services):
             raise ValueError("carrier_services must not duplicate a carrier and mode")
@@ -184,11 +208,33 @@ class DocumentValidationResponse(StrictModel):
     issues: list[str]
     provenance: Provenance = Provenance.USER_PROVIDED
 
+class RouteWeatherSample(StrictModel):
+    latitude: float
+    longitude: float
+    route_km: float
+    estimated_arrival_utc: datetime
+    forecast_hour_utc: datetime | None = None
+    precipitation_mm: float | None = None
+    wind_gust_kmh: float | None = None
+    visibility_m: float | None = None
+    weather_code: int | None = None
+    flag: Literal["low", "elevated", "high", "unavailable"]
+
+
+class RouteWeather(StrictModel):
+    source: Literal["Open-Meteo"] = "Open-Meteo"
+    status: Literal["complete", "partial", "unavailable"]
+    severity: Literal["low", "elevated", "high", "unknown"]
+    retrieved_at_utc: datetime | None = None
+    sample_eta_method: Literal["segment_duration", "distance_interpolation"]
+    samples: list[RouteWeatherSample]
+
+
 class RouteOption(StrictModel):
     mode: Literal["air", "sea", "road", "rail"]
     distance_km: float = Field(ge=0)
     transit_hours_estimate: float = Field(ge=0)
-    cost_estimate_usd: float = Field(ge=0)
+    cost_estimate_usd: float | None = Field(default=None, ge=0)
     cost_estimate_inr: float | None = Field(default=None, ge=0)
     mode_feasible: bool
     deadline_feasible: bool
@@ -204,6 +250,8 @@ class RouteOption(StrictModel):
     decision_score: float | None = Field(default=None, ge=0, le=1)
     score_breakdown: dict[str, float] = Field(default_factory=dict)
     disruption_ids: list[str] = Field(default_factory=list)
+    geometry_lon_lat: list[tuple[float, float]] | None = None
+    weather: RouteWeather | None = None
 
 class RouteOptimizationOutput(StrictModel):
     impact_comparison: dict | None = None
@@ -213,6 +261,7 @@ class RouteOptimizationOutput(StrictModel):
     provenance: Literal["ESTIMATED"]
     ranking_method: str = "weighted multi-objective deterministic ranking"
     alternatives: list[dict] = Field(default_factory=list)
+    provider_status: Literal["not_configured", "routing_unavailable", "no_route", "weather_unavailable", "weather_partial", "available"] | None = None
 
 class CarrierRecord(StrictModel):
     carrier_id: str

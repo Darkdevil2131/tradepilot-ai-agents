@@ -140,6 +140,8 @@ class LogisticsOrchestrator:
         review.extend(flag["reason"] for flag in risk.get("flags", []))
         if shipment.dimensions_cm is None:
             review.append("Supply largest package dimensions to verify service fit.")
+        if shipment.road_guidance:
+            review.append("Confirm truck restrictions and live traffic with the carrier before dispatch.")
         candidate = commercial.get("sourced_plan") or commercial.get("recommendation")
         gates = []
         route_data = results["route_optimization"].data
@@ -153,7 +155,23 @@ class LogisticsOrchestrator:
         elif not has_feasible_route:
             gates.append(DecisionGate(gate="route_feasibility", status="blocked", reason="No route satisfies the configured shipment constraints.", evidence_path="/agents/route_optimization/data"))
         else:
-            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason="At least one route passed the configured route and capacity checks.", evidence_path="/agents/route_optimization/data"))
+            reason = ("A road alternative has provider geometry and passed the configured weather and deadline checks."
+                      if shipment.road_guidance else "At least one route passed the configured route and capacity checks.")
+            gates.append(DecisionGate(gate="route_feasibility", status="passed", reason=reason, evidence_path="/agents/route_optimization/data"))
+        if shipment.road_guidance:
+            preferred = route_data.get("recommended_route") or {}
+            quoted_ids = ((candidate or {}).get("evidence") or {}).get("route_leg_ids")
+            if quoted_ids:
+                preferred = next((option for option in route_data.get("routes", [])
+                                  if option["evidence_ids"] == quoted_ids), preferred)
+            weather = preferred.get("weather") or {}
+            provider_status = route_data.get("provider_status") or "routing_unavailable"
+            weather_status = "blocked" if not preferred else "review_required" if weather.get("severity") == "elevated" else "passed"
+            gates.append(DecisionGate(
+                gate="route_weather", status=weather_status,
+                reason=f"Provider status: {provider_status}. Selected route forecast flag: {weather.get('severity', 'unavailable')}.",
+                evidence_path="/agents/route_optimization/data",
+            ))
         if candidate is None:
             gates.append(DecisionGate(gate="commercial_offer", status="blocked", reason="No eligible provider-backed plan or quote is available.", evidence_path="/agents/market_procurement/data"))
         else:

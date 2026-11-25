@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from ..intelligence import rank_supplier_offers
 from ..models import ProcurementOutput, QuoteAssessment, ShipmentRequest
@@ -24,6 +24,7 @@ class MarketProcurementAgent:
     def assess_shipment_offers(self, shipment: ShipmentRequest, routes: list[dict], carriers: list[dict]) -> ProcurementOutput:
         """Qualify commercial evidence against the actual route candidates."""
         now = datetime.now(timezone.utc)
+        departure = max(now, shipment.road_guidance.departure_at) if shipment.road_guidance else now
         eligible_routes = [route for route in routes if route["feasible"]]
         carriers_by_service = {(row["carrier_id"], row["mode"]): row for row in carriers}
         assessments = []
@@ -54,7 +55,7 @@ class MarketProcurementAgent:
                     reasons.append("quote_route_mismatch")
                 if quote.transit_hours is None:
                     reasons.append("quote_transit_unconfirmed")
-                elif shipment.deadline and quote.transit_hours > (shipment.deadline - now).total_seconds() / 3600:
+                elif shipment.deadline and departure + timedelta(hours=quote.transit_hours) > shipment.deadline:
                     reasons.append("quoted_transit_misses_deadline")
                 if not reasons:
                     evidenced_quotes.append(quote)
