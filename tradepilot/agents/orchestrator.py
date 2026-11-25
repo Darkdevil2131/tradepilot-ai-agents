@@ -76,6 +76,9 @@ class LogisticsOrchestrator:
     def _carrier(self,s):
         route=s.get("results",{}).get("route_optimization")
         modes={r["mode"] for r in route.data.get("routes",[]) if r.get("feasible")} if route and route.status=="completed" else set()
+        if route and route.status == "completed" and route.data.get("impact_comparison"):
+            modes = {leg["mode"] for option in route.data["impact_comparison"]["options"]
+                     for portion in option["portions"] for leg in portion["legs"]}
         def investigate():
             result = self.carrier.run(s["shipment"], modes)
             comparison = route.data.get("impact_comparison") if route else None
@@ -88,7 +91,11 @@ class LogisticsOrchestrator:
         options = route.data.get("routes") if route and route.status == "completed" else None
         if route and route.status == "completed" and route.data.get("impact_comparison"):
             comparison = route.data["impact_comparison"]
-            options = [{"feasible": bool(comparison["options"]), "provenance": "SYNTHETIC", "risk_score_estimate": 0.2}]
+            options = [
+                dict(feasible=True, provenance="SYNTHETIC",
+                     disruption_ids=sorted({signal for portion in row["portions"] for signal in portion["disruption_ids"]}))
+                for row in comparison["options"]
+            ]
         return self._safe(s,"risk_compliance",lambda:self.risk.run(s["shipment"], options))
     def _documents(self,s): return self._safe(s,"document_intelligence",lambda:self.documents.run(s["shipment"]))
     def _procurement(self,s):

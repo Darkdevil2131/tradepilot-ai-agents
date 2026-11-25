@@ -26,10 +26,14 @@ class RouteOptimizationAgent:
                 "mode": route["mode"],
                 "decision_score": route["decision_score"],
                 "cost_estimate_usd": route["cost_estimate_usd"],
+                "cost_estimate_inr": route.get("cost_estimate_inr"),
                 "transit_hours_estimate": route["transit_hours_estimate"],
                 "risk_score_estimate": route["risk_score_estimate"],
                 "feasible": route["feasible"],
                 "disruption_ids": route["disruption_ids"],
+                "evidence_ids": route.get("evidence_ids", []),
+                "provenance": route["provenance"],
+                "reason": route["feasibility_reason"],
             }
             for route in routes
         ]

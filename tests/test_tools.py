@@ -29,11 +29,15 @@ def test_connected_synthetic_network_rejects_missing_mode_and_capacity():
     assert all(route["legs"][-1]["to"]=="london" for route in routes)
     assert any("capacity:SIM-BOM-LON-AIR" in route["feasibility_reason"] for route in routes)
 
-def test_domestic_road_is_only_sample_eligibility_not_network_route():
+def test_domestic_road_has_explicit_estimated_corridor():
     s=ShipmentRequest(origin="Mumbai",destination="Delhi",cargo_description="parts",weight_kg=500,allowed_modes=["road"])
     route=calculate_routes(s)[0]
     assert route["mode_feasible"] is True
-    assert "not a road-network route" in route["feasibility_reason"]
+    assert route["provenance"] == "ESTIMATED"
+    assert route["legs"][0]["from"] == "mumbai"
+    assert route["legs"][-1]["to"] == "delhi"
+    assert route["cost_estimate_inr"] > 0
+    assert len(route["legs"]) > 1 and route["source_references"]
 
 def test_deadline_marks_slow_routes_infeasible():
     s=ShipmentRequest(origin="Mumbai",destination="Singapore",cargo_description="parts",weight_kg=500,deadline=datetime.now(timezone.utc)+timedelta(hours=1))

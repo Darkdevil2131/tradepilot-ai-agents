@@ -24,7 +24,7 @@ class Quote(StrictModel):
     provenance: Provenance = Provenance.USER_PROVIDED
 
 class ShippingDocument(StrictModel):
-    document_type: Literal["commercial_invoice", "bill_of_lading", "packing_list", "certificate_of_origin", "dangerous_goods_declaration"]
+    document_type: Literal["commercial_invoice", "bill_of_lading", "packing_list", "certificate_of_origin", "dangerous_goods_declaration", "consignment_note"]
     fields: dict[str, str | float | int | bool | None] = Field(default_factory=dict)
     raw_text: str | None = Field(default=None, max_length=50_000)
     provenance: Provenance = Provenance.USER_PROVIDED
@@ -45,6 +45,7 @@ class DisruptionSignal(StrictModel):
     signal_id: str = Field(min_length=1, max_length=80)
     affected_modes: list[Literal["air", "sea", "road", "rail"]] = Field(default_factory=list, max_length=4)
     affected_locations: list[str] = Field(default_factory=list, max_length=20)
+    affected_leg_ids: list[str] = Field(default_factory=list, max_length=30)
     severity: float = Field(ge=0, le=1)
     delay_hours: float = Field(default=0, ge=0, le=10_000)
     active: bool = True
@@ -63,11 +64,21 @@ class SupplierOffer(StrictModel):
     certifications: list[str] = Field(default_factory=list, max_length=30)
     provenance: Provenance = Provenance.USER_PROVIDED
 
+class SubmittedCarrierService(StrictModel):
+    carrier_id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=160)
+    mode: Literal["air", "sea", "road", "rail"]
+    origin: str = Field(min_length=2, max_length=100)
+    destination: str = Field(min_length=2, max_length=100)
+    capacity_kg: float = Field(gt=0, le=1_000_000)
+    contact_email: str | None = Field(default=None, max_length=254)
+    source_reference: str = Field(min_length=1, max_length=300)
+
 class ImpactScenario(StrictModel):
     critical_weight_kg: float = Field(gt=0)
     target_days: float = Field(gt=0, le=365)
     daily_stoppage_inr: float = Field(ge=0, le=1e10)
-    closed_leg_ids: list[Literal["pickup", "air", "ocean", "delivery"]] = Field(default_factory=list)
+    closed_leg_ids: list[str] = Field(default_factory=list, max_length=50)
     freight_multiplier: float = Field(default=1, gt=0, le=10)
 
 class ShipmentRequest(StrictModel):
@@ -84,6 +95,7 @@ class ShipmentRequest(StrictModel):
     deadline: datetime | None = None
     allowed_modes: list[Literal["air", "sea", "road", "rail"]] = Field(default_factory=lambda: ["air", "sea", "road"], min_length=1, max_length=4)
     quotes: list[Quote] = Field(default_factory=list, max_length=50)
+    carrier_services: list[SubmittedCarrierService] = Field(default_factory=list, max_length=50)
     documents: list[ShippingDocument] = Field(default_factory=list, max_length=20)
     incoterm: str | None = Field(default=None, max_length=20)
     optimization: OptimizationPreferences = Field(default_factory=OptimizationPreferences)
@@ -95,7 +107,12 @@ class ShipmentRequest(StrictModel):
     @field_validator("origin", "destination")
     @classmethod
     def normalize_locations(cls, value: str) -> str:
-        return " ".join(value.strip().split())
+        value = " ".join(value.strip().split())
+        return {"cochin": "Kochi", "ernakulam": "Kochi", "madras": "Chennai",
+                "bangalore": "Bengaluru", "bombay": "Mumbai", "calcutta": "Kolkata",
+                "vizag": "Visakhapatnam", "new delhi": "Delhi", "calicut": "Kozhikode",
+                "trichur": "Thrissur", "belgaum": "Belagavi", "hubli": "Hubballi",
+                "tumkur": "Tumakuru", "allahabad": "Prayagraj"}.get(value.casefold(), value)
 
     @field_validator("deadline")
     @classmethod
@@ -110,14 +127,15 @@ class ShipmentRequest(StrictModel):
         if self.dimensions_cm and any(not math.isfinite(v) or v <= 0 for v in self.dimensions_cm):
             raise ValueError("Package dimensions must be positive and finite")
         if self.impact_scenario:
-            if (self.origin.casefold(), self.destination.casefold()) != ("dubai", "mumbai"):
-                raise ValueError("The impact scenario currently covers Dubai to Mumbai only")
             if self.impact_scenario.critical_weight_kg > self.weight_kg:
                 raise ValueError("Critical weight exceeds shipment weight")
         if self.origin.casefold() == self.destination.casefold():
             raise ValueError("origin and destination must differ")
         if len(set(self.allowed_modes)) != len(self.allowed_modes):
             raise ValueError("allowed_modes must not contain duplicates")
+        service_keys = {(row.carrier_id, row.mode) for row in self.carrier_services}
+        if len(service_keys) != len(self.carrier_services):
+            raise ValueError("carrier_services must not duplicate a carrier and mode")
         if self.deadline and self.deadline <= datetime.now(timezone.utc):
             raise ValueError("deadline must be in the future")
         return self
@@ -160,6 +178,7 @@ class RouteOption(StrictModel):
     distance_km: float = Field(ge=0)
     transit_hours_estimate: float = Field(ge=0)
     cost_estimate_usd: float = Field(ge=0)
+    cost_estimate_inr: float | None = Field(default=None, ge=0)
     mode_feasible: bool
     deadline_feasible: bool
     feasible: bool
@@ -169,6 +188,7 @@ class RouteOption(StrictModel):
     distance_method: str
     legs: list[dict] = Field(default_factory=list)
     evidence_ids: list[str] = Field(default_factory=list)
+    source_references: list[str] = Field(default_factory=list)
     capacity_kg: float | None = Field(default=None, ge=0)
     decision_score: float | None = Field(default=None, ge=0, le=1)
     score_breakdown: dict[str, float] = Field(default_factory=dict)
@@ -193,19 +213,21 @@ class CarrierRecord(StrictModel):
     history_count: int
     on_time_count: int
     history_reference: str
-    provenance: Literal["SYNTHETIC"]
+    provenance: Literal["SYNTHETIC", "USER_PROVIDED"]
     capacity_available: bool
     coverage_match: bool
     contact: dict[str, str] = Field(default_factory=dict)
     certifications: list[str] = Field(default_factory=list)
     service_score: float | None = Field(default=None, ge=0, le=1)
+    history_confidence: Literal["unknown", "limited_synthetic", "synthetic_sample"] = "unknown"
+    coverage_reference: str | None = None
 
 class CarrierResearchOutput(StrictModel):
     leg_plans: list[dict] = Field(default_factory=list)
     carriers: list[CarrierRecord]
     excluded_capacity: int = Field(ge=0)
     excluded_coverage: int = Field(ge=0)
-    provenance: Literal["SYNTHETIC"]
+    provenance: Literal["SYNTHETIC", "USER_PROVIDED"]
     notice: str
     recommended_carrier: dict | None = None
 
@@ -254,6 +276,7 @@ class ProcurementOutput(StrictModel):
     recommendation: ProcurementRecommendation | None
     recommendation_warning: str | None = None
     ranked_supplier_offers: list[dict] = Field(default_factory=list)
+    excluded_supplier_offers: list[dict] = Field(default_factory=list)
     supplier_recommendation: dict | None = None
     supplier_warning: str | None = None
     note: str

@@ -14,6 +14,7 @@ class MarketProcurementAgent:
         )
         suppliers = rank_supplier_offers(shipment)
         result["ranked_supplier_offers"] = suppliers["ranked"]
+        result["excluded_supplier_offers"] = suppliers["excluded"]
         result["supplier_recommendation"] = suppliers["recommendation"]
         result["supplier_warning"] = suppliers["warning"]
         return ProcurementOutput(**result)

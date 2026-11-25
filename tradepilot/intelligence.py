@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from .models import ShipmentRequest
+from .tools import disruption_matches_leg
 
 
 MODE_RELIABILITY = {"air": 0.88, "sea": 0.78, "road": 0.82, "rail": 0.84}
@@ -18,6 +19,8 @@ def _normalized(value: float, low: float, high: float) -> float:
 
 def rank_routes(shipment: ShipmentRequest, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Apply user-provided disruptions and deterministic multi-objective scoring."""
+    if not routes:
+        return []
     adjusted: list[dict[str, Any]] = []
     remaining_hours = None
     if shipment.deadline:
@@ -25,23 +28,14 @@ def rank_routes(shipment: ShipmentRequest, routes: list[dict[str, Any]]) -> list
 
     for original in routes:
         route = dict(original)
-        legs = route.get("legs") or []
-        modes = {route["mode"]} | {str(leg.get("mode", "")).casefold() for leg in legs}
-        locations = {shipment.origin.casefold(), shipment.destination.casefold()}
-        for leg in legs:
-            locations.update({str(leg.get("from", "")).casefold(), str(leg.get("to", "")).casefold()})
+        legs = route.get("legs") or [{"mode": route["mode"], "from": shipment.origin, "to": shipment.destination}]
 
         matched = []
         added_delay = 0.0
         added_risk = 0.0
         blocking = False
         for signal in shipment.disruptions:
-            if not signal.active:
-                continue
-            mode_match = not signal.affected_modes or bool(modes.intersection(signal.affected_modes))
-            wanted_locations = {location.casefold() for location in signal.affected_locations}
-            location_match = not wanted_locations or bool(locations.intersection(wanted_locations))
-            if mode_match and location_match:
+            if any(disruption_matches_leg(signal, leg["mode"], leg["from"], leg["to"], leg.get("id")) for leg in legs):
                 matched.append(signal.signal_id)
                 added_delay += signal.delay_hours
                 added_risk += signal.severity * 0.35
@@ -135,20 +129,22 @@ def rank_supplier_offers(shipment: ShipmentRequest) -> dict[str, Any]:
             "excluded": excluded,
         }
 
-    prices = [row["unit_price"] for row in eligible]
-    leads = [row["lead_time_days"] for row in eligible]
-    for row in eligible:
-        price = _normalized(row["unit_price"], min(prices), max(prices))
-        lead = _normalized(row["lead_time_days"], min(leads), max(leads))
-        quality_penalty = 1.0 - row["quality_score"]
-        row["decision_score"] = round(0.50 * price + 0.25 * lead + 0.25 * quality_penalty, 6)
-        row["score_breakdown"] = {
-            "normalized_price": round(price, 6),
-            "normalized_lead_time": round(lead, 6),
-            "quality_penalty": round(quality_penalty, 6),
-        }
-    eligible.sort(key=lambda row: (row["currency"], row["decision_score"], row["supplier_id"]))
     currencies = {row["currency"] for row in eligible}
+    for currency in currencies:
+        group = [row for row in eligible if row["currency"] == currency]
+        prices = [row["unit_price"] for row in group]
+        leads = [row["lead_time_days"] for row in group]
+        for row in group:
+            price = _normalized(row["unit_price"], min(prices), max(prices))
+            lead = _normalized(row["lead_time_days"], min(leads), max(leads))
+            quality_penalty = 1.0 - row["quality_score"]
+            row["decision_score"] = round(0.50 * price + 0.25 * lead + 0.25 * quality_penalty, 6)
+            row["score_breakdown"] = {
+                "normalized_price": round(price, 6),
+                "normalized_lead_time": round(lead, 6),
+                "quality_penalty": round(quality_penalty, 6),
+            }
+    eligible.sort(key=lambda row: (row["currency"], row["decision_score"], row["supplier_id"]))
     recommendation = None
     warning = None
     if len(currencies) == 1:
@@ -167,11 +163,12 @@ def rank_supplier_offers(shipment: ShipmentRequest) -> dict[str, Any]:
 
 
 _FIELD_PATTERNS = {
+    "consignment_number": r"(?im)^[ \t]*consignment[ \t]*(?:number|no\.?|#)[ \t]*[:\-][ \t]*(.+?)[ \t]*$",
     "invoice_number": r"(?im)^\s*(?:invoice\s*(?:number|no\.?|#))\s*[:\-]\s*(.+?)\s*$",
     "shipper": r"(?im)^\s*(?:shipper|exporter|seller)\s*[:\-]\s*(.+?)\s*$",
     "consignee": r"(?im)^\s*(?:consignee|buyer)\s*[:\-]\s*(.+?)\s*$",
     "currency": r"(?im)^\s*currency\s*[:\-]\s*([A-Z]{3})\s*$",
-    "total": r"(?im)^\s*(?:invoice\s*)?total\s*[:\-]\s*([0-9]+(?:\.[0-9]+)?)\s*$",
+    "total": r"(?im)^[ \t]*(?:(?:invoice|grand)[ \t]*)?total[ \t]*[:\-][ \t]*(?:INR[ \t]*|₹[ \t]*)?([0-9][0-9,]*(?:\.[0-9]+)?)[ \t]*$",
     "package_count": r"(?im)^\s*(?:package\s*count|packages)\s*[:\-]\s*([0-9]+)\s*$",
 }
 
@@ -189,7 +186,7 @@ def extract_document_fields(raw_text: str | None) -> dict[str, str | int | float
         if field == "package_count":
             value = int(value)
         elif field == "total":
-            value = float(value)
+            value = value.replace(",", "")
         elif field == "currency":
             value = str(value).upper()
         extracted[field] = value

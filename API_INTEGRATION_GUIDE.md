@@ -110,9 +110,36 @@ Submit `examples/impact_comparison.json` to the shipment analysis endpoint. Read
 the critical weight. Each portion lists its legs, freight charges and delivery
 time. Options are ranked by freight plus the cost of waiting for the critical
 portion. A target date can be missed at a cost; a shipment deadline is a hard
-constraint. The fixture covers Dubai to Mumbai, including road transfers.
+constraint. The original Dubai–Mumbai fixture remains available. India split
+scenarios use explicit bidirectional synthetic corridors for Kochi–Chennai,
+Kochi–Bengaluru, Chennai–Bengaluru, Mumbai–Pune, Mumbai–Delhi,
+Mumbai–Ahmedabad, Hyderabad–Bengaluru, Kolkata–Bhubaneswar,
+Chennai–Visakhapatnam, and Delhi–Jaipur. Modes vary by corridor. Split plans
+include road pickup and delivery, so include `road` in `allowed_modes`.
 Set `closed_leg_ids` or `freight_multiplier` within `impact_scenario` to
 compare disruptions and prices. Empty options include rejection reasons.
+Ordinary route comparisons expose `cost_estimate_inr` on modeled India
+corridors. The legacy USD field uses a fixed illustrative INR 85/USD
+conversion. Quoted amounts retain their own currency. With road disabled,
+ordinary air, sea, and rail options cover terminal-to-terminal movement only.
+Road routes use 57 selected hubs and 70 bidirectional planning links,
+including major national corridors and regional feeders. The agent can use
+these linked roads even where no dedicated multimodal fixture exists.
+Corridor references describe broad geography. Estimated distances, drive
+times, capacities, and modeled tariffs do not verify truck access, traffic,
+tolls or actual pricing. A split scenario without any connected option in the
+offline model returns a blocked decision.
+
+Send a disruption with `affected_leg_ids` set to directional IDs from
+`routes[].evidence_ids` to target a road segment. The opposite direction has
+its own ID. Each route option includes the chain of waypoints and its evidence
+references. Coastal and rail service schedules still use synthetic fixtures.
+
+Optional `carrier_services` entries let operators submit exact directional
+lane, mode, capacity and a source reference for a real carrier quote.
+Missing contacts and history stay empty or unknown. For domestic road/rail-only
+requests, submit a `consignment_note` with its number and consignee. A conflict
+between raw labelled document text and explicit fields blocks validation.
 Carrier Research assigns synthetic leg tariffs using combined weight on each leg. See carrier_research.data.leg_plans and market_procurement.data.sourced_plan for the priced plan. Shipment-wide quotes have no leg scope and cannot replace these tariffs.
 
 ## Synthetic carrier evaluation

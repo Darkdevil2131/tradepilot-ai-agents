@@ -42,6 +42,9 @@ def explain_decision(shipment, results, decision) -> StrategicExplanation:
         return report
     if decision["status"] == "blocked":
         blocked = [gate["gate"] for gate in decision["gates"] if gate["status"] == "blocked"]
+        if "route_feasibility" in blocked:
+            report.conclusion = "A feasible route is unavailable under the configured constraints. Review the rejected options and route evidence before changing the shipment."
+            return report
         if "commercial_offer" in blocked:
             report.conclusion = "A supported arrangement is unavailable because no eligible provider-backed plan or quote remains. Resolve the listed gates before rerunning the investigation."
         else:
