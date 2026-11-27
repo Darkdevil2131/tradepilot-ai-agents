@@ -88,9 +88,18 @@ def require_role(role: str):
 
 @app.get("/api/v1/health",tags=["health"])
 async def health():
-    return {"status":"ok","mode":"offline_deterministic","gemini_enabled":narrator.enabled,
+    providers = {
+        "osrm": "configured" if os.getenv("TRADEPILOT_OSRM_URL", "").strip() else "unconfigured",
+        "forecast": "configured" if os.getenv("TRADEPILOT_FORECAST_URL", "").strip() else "unconfigured",
+        "here_truck": "configured" if os.getenv("TRADEPILOT_HERE_TRUCK_ENABLED", "").casefold() == "true"
+        and os.getenv("TRADEPILOT_HERE_API_KEY", "").strip() else "unconfigured",
+        "commercial_quotes": "operator_submitted_or_synthetic",
+    }
+    mode = "deterministic_with_optional_providers" if "configured" in providers.values() else "offline_deterministic"
+    return {"status":"ok","mode":mode,"gemini_enabled":narrator.enabled,
             "storage":store.persistence_label,"workflow_storage":operations.persistence_label,
-            "rate_limiter":rate_limiter.mode,"live_logistics_feeds":False}
+            "rate_limiter":rate_limiter.mode,"live_logistics_feeds":False,
+            "providers":providers,"provider_availability":"verified_per_shipment_only"}
 
 @app.get("/api/v1/ready",tags=["health"])
 def readiness():

@@ -47,7 +47,11 @@ class RiskComplianceAgent:
                 if selected.get("disruption_ids"):
                     flags.append({"code": "ROUTE_DISRUPTION_APPLIED", "severity": "medium", "reason": "The selected route was adjusted using user-provided disruption signals: " + ", ".join(selected["disruption_ids"])})
                 if selected.get("provenance") == "SYNTHETIC":
-                    flags.append({"code": "SYNTHETIC_ROUTE_EVIDENCE", "severity": "medium", "reason": "Route connectivity, capacity, duration, and cost derive from the synthetic network fixture."})
+                    flags.append({"code": "SYNTHETIC_ROUTE_EVIDENCE", "severity": "medium", "reason": "Modeled legs use synthetic capacity, duration and cost. Confirm service availability with the carrier."})
+                if any(leg.get("from", leg.get("origin")) == "colombo" or
+                       leg.get("to", leg.get("destination")) == "colombo" for leg in selected.get("legs", [])):
+                    flags.append({"code": "FOREIGN_TRANSSHIPMENT_REVIEW", "severity": "medium",
+                                  "reason": "The proposed route transfers in Colombo. Confirm transit paperwork and onward service."})
 
         if all(CITY_COUNTRIES.get(city.casefold()) == "india" for city in (shipment.origin, shipment.destination)):
             flags.append({"code": "DOMESTIC_DOCUMENT_REVIEW_REQUIRED", "severity": "medium",

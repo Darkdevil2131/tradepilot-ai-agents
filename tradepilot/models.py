@@ -1,8 +1,8 @@
 from __future__ import annotations
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Literal
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from typing import Annotated, Literal
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 class Provenance(str, Enum):
     LIVE = "LIVE"
@@ -11,8 +11,16 @@ class Provenance(str, Enum):
     ESTIMATED = "ESTIMATED"
     SYNTHETIC = "SYNTHETIC"
 
+
+def submitted_provenance(value: Provenance) -> Provenance:
+    return Provenance.USER_PROVIDED if value in {Provenance.LIVE, Provenance.HISTORICAL} else value
+
+
+SubmittedProvenance = Annotated[Provenance, AfterValidator(submitted_provenance)]
+
+
 class StrictModel(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
 
 class Quote(StrictModel):
     carrier_id: str = Field(min_length=1, max_length=80)
@@ -21,18 +29,26 @@ class Quote(StrictModel):
     currency: str = Field(default="USD", pattern=r"^[A-Z]{3}$")
     valid_until: datetime | None = None
     includes_insurance: bool = False
-    provenance: Provenance = Provenance.USER_PROVIDED
+    provenance: SubmittedProvenance = Provenance.USER_PROVIDED
     source_reference: str | None = Field(default=None, min_length=1, max_length=300)
     route_leg_ids: list[str] = Field(default_factory=list, max_length=64)
     transit_hours: float | None = Field(default=None, gt=0, le=10_000)
     quoted_capacity_kg: float | None = Field(default=None, gt=0, le=1_000_000)
     door_to_door_total: bool = False
+    leg_total: bool = False
+
+    @model_validator(mode="after")
+    def check_quote_scope(self):
+        if self.leg_total and (self.door_to_door_total or len(self.route_leg_ids) != 1):
+            raise ValueError("A leg-total quote must identify exactly one leg and exclude shipment-wide scope")
+        return self
 
 class ShippingDocument(StrictModel):
-    document_type: Literal["commercial_invoice", "bill_of_lading", "packing_list", "certificate_of_origin", "dangerous_goods_declaration", "consignment_note"]
+    document_type: Literal["commercial_invoice", "bill_of_lading", "packing_list", "certificate_of_origin",
+                           "dangerous_goods_declaration", "consignment_note", "air_waybill"]
     fields: dict[str, str | float | int | bool | None] = Field(default_factory=dict)
     raw_text: str | None = Field(default=None, max_length=50_000)
-    provenance: Provenance = Provenance.USER_PROVIDED
+    provenance: SubmittedProvenance = Provenance.USER_PROVIDED
 
 class OptimizationPreferences(StrictModel):
     cost_weight: float = Field(default=0.40, ge=0, le=1)
@@ -54,7 +70,7 @@ class DisruptionSignal(StrictModel):
     severity: float = Field(ge=0, le=1)
     delay_hours: float = Field(default=0, ge=0, le=10_000)
     active: bool = True
-    provenance: Provenance = Provenance.USER_PROVIDED
+    provenance: SubmittedProvenance = Provenance.USER_PROVIDED
 
 class SupplierOffer(StrictModel):
     supplier_id: str = Field(min_length=1, max_length=80)
@@ -67,7 +83,7 @@ class SupplierOffer(StrictModel):
     origin: str = Field(min_length=2, max_length=100)
     contact_email: str | None = Field(default=None, max_length=254)
     certifications: list[str] = Field(default_factory=list, max_length=30)
-    provenance: Provenance = Provenance.USER_PROVIDED
+    provenance: SubmittedProvenance = Provenance.USER_PROVIDED
 
 class SubmittedCarrierService(StrictModel):
     carrier_id: str = Field(min_length=1, max_length=80)
@@ -78,6 +94,14 @@ class SubmittedCarrierService(StrictModel):
     capacity_kg: float = Field(gt=0, le=1_000_000)
     contact_email: str | None = Field(default=None, max_length=254)
     source_reference: str = Field(min_length=1, max_length=300)
+    route_leg_ids: list[str] = Field(default_factory=list, max_length=64)
+
+    @field_validator("source_reference")
+    @classmethod
+    def nonblank_reference(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError("source_reference must contain evidence text")
+        return value.strip()
 
 class ImpactScenario(StrictModel):
     critical_weight_kg: float = Field(gt=0)
@@ -158,8 +182,9 @@ class ShipmentRequest(StrictModel):
 
     @property
     def requires_submitted_offers(self) -> bool:
-        return (self.road_guidance is not None or self.commercial_mode == "submitted" or bool(self.carrier_services)
-                or any(quote.source_reference for quote in self.quotes))
+        return (self.commercial_mode == "submitted" or bool(self.carrier_services)
+                or any(quote.source_reference for quote in self.quotes)
+                or (self.road_guidance is not None and self.allowed_modes == ["road"] and self.impact_scenario is None))
 
     @field_validator("origin", "destination")
     @classmethod
@@ -190,17 +215,19 @@ class ShipmentRequest(StrictModel):
             raise ValueError("origin and destination must differ")
         if len(set(self.allowed_modes)) != len(self.allowed_modes):
             raise ValueError("allowed_modes must not contain duplicates")
+        if len({signal.signal_id for signal in self.disruptions}) != len(self.disruptions):
+            raise ValueError("disruptions must have distinct signal identifiers")
         if self.road_guidance:
-            if self.impact_scenario or self.allowed_modes != ["road"]:
-                raise ValueError("road_guidance requires road-only service without a split impact_scenario")
+            if "road" not in self.allowed_modes:
+                raise ValueError("road_guidance requires road to be an allowed mode")
             if self.road_guidance.origin == self.road_guidance.destination:
                 raise ValueError("road_guidance endpoints must have distinct coordinates")
             truck = self.road_guidance.truck
-            if truck and self.weight_kg > truck.loaded_weight_kg - truck.tare_weight_kg:
+            if truck and not self.impact_scenario and self.allowed_modes == ["road"] and self.weight_kg > truck.loaded_weight_kg - truck.tare_weight_kg:
                 raise ValueError("Shipment exceeds the declared loaded truck payload")
-        service_keys = {(row.carrier_id, row.mode) for row in self.carrier_services}
+        service_keys = {(row.carrier_id, row.mode, tuple(row.route_leg_ids)) for row in self.carrier_services}
         if len(service_keys) != len(self.carrier_services):
-            raise ValueError("carrier_services must not duplicate a carrier and mode")
+            raise ValueError("carrier_services must not duplicate a carrier, mode and route scope")
         if self.deadline and self.deadline <= datetime.now(timezone.utc):
             raise ValueError("deadline must be in the future")
         return self
@@ -237,6 +264,7 @@ class DocumentValidationResponse(StrictModel):
     missing_document_types: list[str]
     issues: list[str]
     provenance: Provenance = Provenance.USER_PROVIDED
+    authenticity: Literal["unverified"] = "unverified"
 
 class RouteWeatherSample(StrictModel):
     latitude: float
@@ -279,6 +307,7 @@ class RouteOption(StrictModel):
     transit_hours_estimate: float = Field(ge=0)
     cost_estimate_usd: float | None = Field(default=None, ge=0)
     cost_estimate_inr: float | None = Field(default=None, ge=0)
+    modeled_freight_inr_per_kg: float | None = Field(default=None, ge=0)
     mode_feasible: bool
     deadline_feasible: bool
     feasible: bool
@@ -305,7 +334,8 @@ class RouteOptimizationOutput(StrictModel):
     provenance: Literal["ESTIMATED"]
     ranking_method: str = "weighted multi-objective deterministic ranking"
     alternatives: list[dict] = Field(default_factory=list)
-    provider_status: Literal["not_configured", "routing_unavailable", "no_route", "weather_unavailable", "weather_partial", "truck_evidence_incomplete", "available"] | None = None
+    provider_status: Literal["not_configured", "routing_unavailable", "no_route", "weather_unavailable",
+                             "weather_partial", "truck_evidence_incomplete", "endpoint_mismatch", "available"] | None = None
 
 class CarrierRecord(StrictModel):
     carrier_id: str
@@ -325,9 +355,11 @@ class CarrierRecord(StrictModel):
     service_score: float | None = Field(default=None, ge=0, le=1)
     history_confidence: Literal["unknown", "limited_synthetic", "synthetic_sample"] = "unknown"
     coverage_reference: str | None = None
+    route_leg_ids: list[str] = Field(default_factory=list)
 
 class CarrierResearchOutput(StrictModel):
     leg_plans: list[dict] = Field(default_factory=list)
+    published_services: list[dict] = Field(default_factory=list)
     carriers: list[CarrierRecord]
     excluded_capacity: int = Field(ge=0)
     excluded_coverage: int = Field(ge=0)
@@ -355,6 +387,7 @@ class DocumentValidationOutput(StrictModel):
     issues: list[str]
     provenance: Literal["USER_PROVIDED"]
     extracted_fields: dict[str, dict] = Field(default_factory=dict)
+    authenticity: Literal["unverified"] = "unverified"
 
 class RankedQuote(StrictModel):
     includes_insurance: bool = False
@@ -381,6 +414,7 @@ class QuoteAssessment(StrictModel):
 
 class ProcurementOutput(StrictModel):
     sourced_plan: dict | None = None
+    plan_candidates: list[dict] = Field(default_factory=list)
     quotes_received: int = Field(ge=0)
     eligible_quotes: int = Field(ge=0)
     ranked_quotes: list[RankedQuote]

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 from .models import ShipmentRequest
-from .tools import disruption_matches_leg
+from .tools import disruption_matches_leg, effective_departure
 
 
 MODE_RELIABILITY = {"air": 0.88, "sea": 0.78, "road": 0.82, "rail": 0.84}
@@ -14,7 +14,7 @@ MODE_RELIABILITY = {"air": 0.88, "sea": 0.78, "road": 0.82, "rail": 0.84}
 def _normalized(value: float, low: float, high: float) -> float:
     if high <= low:
         return 0.0
-    return (value - low) / (high - low)
+    return max(0.0, min(1.0, (value - low) / (high - low)))
 
 
 def rank_routes(shipment: ShipmentRequest, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -24,10 +24,13 @@ def rank_routes(shipment: ShipmentRequest, routes: list[dict[str, Any]]) -> list
     adjusted: list[dict[str, Any]] = []
     remaining_hours = None
     if shipment.deadline:
-        remaining_hours = max(0.0, (shipment.deadline - datetime.now(timezone.utc)).total_seconds() / 3600)
+        remaining_hours = max(0.0, (shipment.deadline - effective_departure(shipment)).total_seconds() / 3600)
 
     for original in routes:
         route = dict(original)
+        if route.get("weather"):
+            adjusted.append(route)
+            continue
         legs = route.get("legs") or [{"mode": route["mode"], "from": shipment.origin, "to": shipment.destination}]
 
         matched = []
@@ -35,7 +38,8 @@ def rank_routes(shipment: ShipmentRequest, routes: list[dict[str, Any]]) -> list
         added_risk = 0.0
         blocking = False
         for signal in shipment.disruptions:
-            if any(disruption_matches_leg(signal, leg["mode"], leg["from"], leg["to"], leg.get("id")) for leg in legs):
+            if any(disruption_matches_leg(signal, leg["mode"], leg["from"], leg["to"],
+                                          leg.get("id"), leg.get("via", ())) for leg in legs):
                 matched.append(signal.signal_id)
                 added_delay += signal.delay_hours
                 added_risk += signal.severity * 0.35
@@ -105,19 +109,22 @@ def rank_routes(shipment: ShipmentRequest, routes: list[dict[str, Any]]) -> list
 
 def rank_supplier_offers(shipment: ShipmentRequest) -> dict[str, Any]:
     """Rank comparable supplier offers without inventing FX rates or availability."""
-    required_quantity = shipment.required_quantity or 1.0
-    required = {item.casefold() for item in shipment.required_certifications}
+    required_quantity = shipment.required_quantity
+    required = {item.strip().casefold() for item in shipment.required_certifications if item.strip()}
     eligible = []
     excluded = []
     for offer in shipment.supplier_offers:
-        missing = sorted(required - {item.casefold() for item in offer.certifications})
+        missing = sorted(required - {item.strip().casefold() for item in offer.certifications})
         reasons = []
-        if offer.available_quantity < required_quantity:
+        if required_quantity is not None and offer.available_quantity < required_quantity:
             reasons.append("insufficient_quantity")
+        if shipment.requires_submitted_offers and offer.provenance != "USER_PROVIDED":
+            reasons.append("submitted_supplier_evidence_required")
         if missing:
             reasons.append("missing_certifications:" + ",".join(missing))
         row = offer.model_dump(mode="json")
-        row["total_price"] = round(offer.unit_price * required_quantity, 2)
+        row["total_price"] = (float(round(Decimal(str(offer.unit_price)) * Decimal(str(required_quantity)), 2))
+                              if required_quantity is not None else None)
         row["exclusion_reasons"] = reasons
         (excluded if reasons else eligible).append(row)
 
@@ -147,7 +154,11 @@ def rank_supplier_offers(shipment: ShipmentRequest) -> dict[str, Any]:
     eligible.sort(key=lambda row: (row["currency"], row["decision_score"], row["supplier_id"]))
     recommendation = None
     warning = None
-    if len(currencies) == 1:
+    if len(currencies) > 1:
+        warning = "Supplier offers use multiple currencies; no FX conversion is configured, so no cross-currency winner is selected."
+    elif required_quantity is None:
+        warning = "Supply the required quantity before selecting a supplier."
+    else:
         recommendation = {
             "supplier_id": eligible[0]["supplier_id"],
             "name": eligible[0]["name"],
@@ -157,37 +168,45 @@ def rank_supplier_offers(shipment: ShipmentRequest) -> dict[str, Any]:
             "requires_human_approval": True,
             "provenance": eligible[0]["provenance"],
         }
-    else:
-        warning = "Supplier offers use multiple currencies; no FX conversion is configured, so no cross-currency winner is selected."
     return {"ranked": eligible, "recommendation": recommendation, "warning": warning, "excluded": excluded}
 
 
 _FIELD_PATTERNS = {
+    "air_waybill_number": r"(?im)^[ \t]*(?:air[ \t]+waybill|awb)[ \t]*(?:number|no\.?|#)?[ \t]*[:\-][ \t]*(.+?)[ \t]*$",
     "consignment_number": r"(?im)^[ \t]*consignment[ \t]*(?:number|no\.?|#)[ \t]*[:\-][ \t]*(.+?)[ \t]*$",
-    "invoice_number": r"(?im)^\s*(?:invoice\s*(?:number|no\.?|#))\s*[:\-]\s*(.+?)\s*$",
-    "shipper": r"(?im)^\s*(?:shipper|exporter|seller)\s*[:\-]\s*(.+?)\s*$",
-    "consignee": r"(?im)^\s*(?:consignee|buyer)\s*[:\-]\s*(.+?)\s*$",
-    "currency": r"(?im)^\s*currency\s*[:\-]\s*([A-Z]{3})\s*$",
+    "invoice_number": r"(?im)^[ \t]*invoice[ \t]*(?:number|no\.?|#)[ \t]*[:\-][ \t]*(\S.*?)[ \t]*$",
+    "shipper": r"(?im)^[ \t]*(?:shipper|exporter|seller)[ \t]*[:\-][ \t]*(\S.*?)[ \t]*$",
+    "consignee": r"(?im)^[ \t]*(?:consignee|buyer)[ \t]*[:\-][ \t]*(\S.*?)[ \t]*$",
+    "currency": r"(?im)^[ \t]*currency[ \t]*[:\-][ \t]*([A-Z]{3})[ \t]*$",
     "total": r"(?im)^[ \t]*(?:(?:invoice|grand)[ \t]*)?total[ \t]*[:\-][ \t]*(?:INR[ \t]*|₹[ \t]*)?([0-9][0-9,]*(?:\.[0-9]+)?)[ \t]*$",
     "package_count": r"(?im)^\s*(?:package\s*count|packages)\s*[:\-]\s*([0-9]+)\s*$",
 }
 
 
-def extract_document_fields(raw_text: str | None) -> dict[str, str | int | float]:
-    """Extract only explicitly labelled fields; this is not OCR and confidence is not fabricated."""
+def read_document_labels(raw_text: str | None) -> tuple[dict, list[str]]:
+    """Return labelled fields and names of fields with inconsistent repetitions."""
     if not raw_text:
-        return {}
-    extracted: dict[str, str | int | float] = {}
+        return {}, []
+    extracted = {}
+    conflicts = []
     for field, pattern in _FIELD_PATTERNS.items():
-        match = re.search(pattern, raw_text)
-        if not match:
+        matches = [match.group(1).strip() for match in re.finditer(pattern, raw_text)]
+        if not matches:
             continue
-        value: str | int | float = match.group(1).strip()
-        if field == "package_count":
-            value = int(value)
-        elif field == "total":
-            value = value.replace(",", "")
-        elif field == "currency":
-            value = str(value).upper()
-        extracted[field] = value
-    return extracted
+        values = matches
+        if field == "total":
+            values = [value.replace(",", "") if "," not in value or re.fullmatch(
+                r"(?:\d{1,3}(?:,\d{3})+|\d{1,2}(?:,\d{2})+,\d{3})(?:\.\d+)?", value)
+                      else value for value in values]
+        normalized = (set(Decimal(value) if "," not in value else value for value in values)
+                      if field in {"total", "package_count"} else
+                      {" ".join(value.casefold().split()) for value in values})
+        if len(normalized) > 1:
+            conflicts.append(field)
+        extracted[field] = (int(values[0]) if field == "package_count" and len(values[0]) <= 12 else
+                            values[0].upper() if field == "currency" else values[0])
+    return extracted, conflicts
+
+
+def extract_document_fields(raw_text: str | None) -> dict[str, str | int | float]:
+    return read_document_labels(raw_text)[0]

@@ -6,7 +6,8 @@ from .models import Provenance, Quote, ShipmentRequest
 from decimal import Decimal
 from collections import defaultdict
 from heapq import heappop, heappush
-from .india_network import EXTRA_CITY_COORDS, MORTH_CORRIDORS, MORTH_HIGHWAY_MAP, ROAD_CHAINS
+from .india_network import EXTRA_CITY_COORDS, MORTH_CORRIDORS, MORTH_HIGHWAY_MAP, MUNDRA_PORT_ACCESS, ROAD_CHAINS
+from .trade_corridors import DOMESTIC_SEA_TRANSFERS, INDIA_EUROPE, INDIA_GULF, PUBLISHED_SEA_LEGS, STRAITS_INDIA
 
 # Coordinates are demo reference points, not routing or carrier integrations.
 CITY_COORDS = {
@@ -34,7 +35,8 @@ CITY_COORDS.update(INDIA_COORDS)
 CITY_COUNTRIES.update(dict.fromkeys(INDIA_COORDS, "india"))
 CITY_COORDS.update(EXTRA_CITY_COORDS)
 CITY_COUNTRIES.update(dict.fromkeys(EXTRA_CITY_COORDS, "india"))
-PORT_CITIES={"mumbai","chennai","kolkata","singapore","dubai","rotterdam","shanghai","london","new york","los angeles"}
+CITY_COORDS.update(colombo=(6.93, 79.85), salalah=(16.94, 54.01))
+CITY_COUNTRIES.update(colombo="sri lanka", salalah="oman")
 MODE_KMH = {"air": 750.0, "sea": 30.0, "road": 55.0}
 MODE_RATE_USD_TON_KM = {"air": 0.42, "sea": 0.025, "road": 0.09}
 
@@ -57,7 +59,7 @@ INDIA_CORRIDORS = {
     frozenset(("kolkata", "bhubaneswar")): {"road": (1.5, 8, 12000), "rail": (2, 6, 20000),
                                             "air": (.5, 45, 1500)},
     frozenset(("chennai", "visakhapatnam")): {"road": (2, 10, 12000), "rail": (2.5, 7, 20000),
-                                              "air": (.5, 48, 1500), "ocean": (5, 5, 20000)},
+                                              "air": (.5, 48, 1500)},
     frozenset(("delhi", "jaipur")): {"road": (1, 6, 12000), "rail": (1.5, 5, 20000)},
 }
 DEMO_INR_PER_USD = 85
@@ -70,11 +72,20 @@ def india_impact_paths(shipment):
     origin_hub, destination_hub = origin + " hub", destination + " hub"
     pickup = ("pickup", origin, origin_hub, "road", .25, 2, 20000)
     delivery = ("delivery", destination_hub, destination, "road", .25, 2, 20000)
-    return [
-        (pickup, (leg, origin_hub, destination_hub, "sea" if leg == "ocean" else leg,
-                  days, rate, capacity), delivery)
-        for leg, (days, rate, capacity) in modes.items()
-    ]
+    paths = []
+    for mode, (days, rate, capacity) in modes.items():
+        if mode == "ocean":
+            transfer, _, _ = DOMESTIC_SEA_TRANSFERS[(origin, destination)]
+            paths.append((pickup, ("ocean", origin_hub, transfer, "sea", days * .4, rate * .4, capacity),
+                          ("ocean-onward", transfer, destination_hub, "sea", days * .6, rate * .6, capacity), delivery))
+        else:
+            paths.append((pickup, (mode, origin_hub, destination_hub, mode, days, rate, capacity), delivery))
+    return paths
+
+
+def domestic_sources(origin, destination, mode):
+    transfer = DOMESTIC_SEA_TRANSFERS.get((origin.casefold(), destination.casefold()))
+    return list(transfer[1:]) if mode == "sea" and transfer else []
 
 
 def road_leg_km(start, end):
@@ -98,12 +109,12 @@ def india_road_paths(shipment, closed_ids=()):
                 graph[a].append((leg_id, a, b, "road", round(km / 48 / 24, 6), round(km * .025, 3), 12000))
     if origin not in graph or destination not in graph:
         return []
-    queue = [(0.0, (origin,), ())]
+    queue = [(0.0, (origin,), (), ())]
     paths = []
     closed = {item.casefold() for item in closed_ids}
     expansions = 0
     while queue and len(paths) < 4 and expansions < 4000:
-        score, cities, legs = heappop(queue)
+        score, cities, legs, applied_signals = heappop(queue)
         expansions += 1
         if cities[-1] == destination:
             paths.append(legs)
@@ -117,8 +128,10 @@ def india_road_paths(shipment, closed_ids=()):
             if any(signal.severity >= .95 for signal in signals):
                 continue
             # Order candidates by modeled transit, including disruption delay.
-            heappush(queue, (score + days + sum(signal.delay_hours for signal in signals) / 24,
-                             cities + (end,), legs + (leg,)))
+            new_signals = [signal for signal in signals if signal.signal_id not in applied_signals]
+            heappush(queue, (score + days + sum(signal.delay_hours for signal in new_signals) / 24,
+                             cities + (end,), legs + (leg,),
+                             applied_signals + tuple(signal.signal_id for signal in new_signals)))
     return paths
 
 
@@ -151,7 +164,8 @@ def road_network_options(shipment):
                                 if mode_ok else "Cargo exceeds modeled road capacity or dimensions."),
             risk_score_estimate=.22, provenance="ESTIMATED", legs=legs,
             evidence_ids=[leg["id"] for leg in legs], capacity_kg=capacity,
-            source_references=[MORTH_CORRIDORS, MORTH_HIGHWAY_MAP],
+            source_references=[MORTH_CORRIDORS, MORTH_HIGHWAY_MAP]
+                              + ([MUNDRA_PORT_ACCESS] if any("mundra" in leg[1:3] for leg in path) else []),
         ))
     return options
 
@@ -165,8 +179,8 @@ def domestic_route_options(shipment, paths):
             continue
         terminal_only = "road" not in shipment.allowed_modes
         if terminal_only:
-            _, _, _, leg_mode, days, rate, limit = path[1]
-            path = ((path[1][0], path[0][1], path[-1][2], leg_mode, days, rate, limit),)
+            path = tuple((leg, start.removesuffix(" hub"), end.removesuffix(" hub"), leg_mode, days, rate, limit)
+                         for leg, start, end, leg_mode, days, rate, limit in path[1:-1])
         hours = sum(edge[4] for edge in path) * 24
         capacity = min(edge[6] for edge in path)
         mode_ok = (shipment.weight_kg <= capacity and
@@ -187,18 +201,19 @@ def domestic_route_options(shipment, paths):
                                 "Connected synthetic corridor.") if mode_ok else "Cargo exceeds capacity or dimensions.",
             risk_score_estimate={"road": .22, "rail": .18, "air": .12, "sea": .30}[mode],
             provenance="SYNTHETIC", legs=legs, evidence_ids=[leg["id"] for leg in legs], capacity_kg=capacity,
+            source_references=domestic_sources(shipment.origin, shipment.destination, mode),
         ))
     return options
 
 
-def disruption_matches_leg(signal, mode, start, end, leg_id=None):
+def disruption_matches_leg(signal, mode, start, end, leg_id=None, via=()):
     if not signal.active or (signal.affected_modes and mode not in signal.affected_modes):
         return False
     if signal.affected_leg_ids and (leg_id is None or
             leg_id.casefold() not in {item.casefold().strip() for item in signal.affected_leg_ids}):
         return False
     locations = {location.casefold().strip() for location in signal.affected_locations}
-    endpoints = {place.casefold().strip() for place in (start, end)}
+    endpoints = {place.casefold().strip() for place in (start, end, *via)}
     city_names = {place.split(" transfer hub")[0].removesuffix(" hub").removesuffix(" warehouse")
                   for place in endpoints}
     return not locations or bool(locations & (endpoints | city_names))
@@ -209,13 +224,26 @@ SYNTHETIC_LEGS = (
     {"id":"SIM-PUNE-BOM-ROAD","from":"pune","to":"mumbai","mode":"road","hours":8,"cost_per_kg":0.09,"capacity_kg":18000,"risk":0.08},
     {"id":"SIM-DEL-BOM-RAIL","from":"delhi","to":"mumbai","mode":"rail","hours":30,"cost_per_kg":0.06,"capacity_kg":120000,"risk":0.12},
     {"id":"SIM-BOM-SIN-AIR","from":"mumbai","to":"singapore","mode":"air","hours":18,"cost_per_kg":0.42,"capacity_kg":10000,"risk":0.12},
+    {"id":"SIM-SIN-BOM-AIR","from":"singapore","to":"mumbai","mode":"air","hours":18,"cost_per_kg":0.42,"capacity_kg":10000,"risk":0.12},
     {"id":"SIM-BOM-SIN-SEA","from":"mumbai","to":"singapore","mode":"sea","hours":264,"cost_per_kg":0.025,"capacity_kg":500000,"risk":0.30},
     {"id":"SIM-DXB-BOM-AIR","from":"dubai","to":"mumbai","mode":"air","hours":48,"cost_per_kg":0.11,"capacity_kg":500,"risk":0.12},
     {"id":"SIM-DXB-BOM-SEA","from":"dubai","to":"mumbai","mode":"sea","hours":384,"cost_per_kg":0.021,"capacity_kg":10000,"risk":0.28},
     {"id":"SIM-BOM-LON-AIR","from":"mumbai","to":"london","mode":"air","hours":30,"cost_per_kg":0.49,"capacity_kg":8500,"risk":0.14},
-    {"id":"SIM-BOM-RTM-SEA","from":"mumbai","to":"rotterdam","mode":"sea","hours":504,"cost_per_kg":0.032,"capacity_kg":250000,"risk":0.33},
-    {"id":"SIM-RTM-LON-ROAD","from":"rotterdam","to":"london","mode":"road","hours":22,"cost_per_kg":0.16,"capacity_kg":20000,"risk":0.20},
+    {"id":"SIM-RTM-LON-ROAD","from":"rotterdam","to":"london","mode":"road","hours":22,"cost_per_kg":0.16,
+     "capacity_kg":20000,"risk":0.20,"via":["Calais", "Channel Tunnel", "Folkestone"]},
 )
+PUBLISHED_CONNECTIONS = tuple(
+    dict(id=f"SIM-{key}", **{"from": origin, "to": destination}, mode="sea", hours=hours,
+         cost_per_kg=rate, capacity_kg=250000, risk=.30, source_reference=source,
+         via=["Suez Canal", "Tangier"] if destination == "rotterdam" and source == INDIA_EUROPE else [])
+    for key, origin, destination, hours, rate, source in PUBLISHED_SEA_LEGS
+    if key != "NHAVA-SHEVA-SINGAPORE"  # existing stable evidence ID
+)
+LANE_SOURCES = {"SIM-BOM-SIN-SEA": STRAITS_INDIA, "SIM-DXB-BOM-SEA": INDIA_GULF,
+                "SIM-SIN-BOM-AIR": "https://www.singaporeair.com/sg/en/plan-travel/destinations/flights-to-india/",
+                "SIM-BOM-SIN-AIR": "https://www.singaporeair.com/sg/en/plan-travel/destinations/flights-to-india/",
+                "SIM-RTM-LON-ROAD": "https://www.leshuttlefreight.com/uk/find-us/",
+                "SIM-DEL-BOM-RAIL": "https://www.pib.gov.in/PressReleasePage.aspx?PRID=2209199&lang=1&reg=1"}
 DANGEROUS_GOODS_KEYWORDS = (
     "chemical", "flammable", "lithium battery", "lithium batteries",
     "lithium-ion", "lithium ion", "li-ion", "li ion", "battery", "batteries",
@@ -249,12 +277,12 @@ def synthetic_paths(shipment: ShipmentRequest) -> list[dict]:
     origin, destination = shipment.origin.casefold(), shipment.destination.casefold()
     paths = []
     def walk(node, legs, visited):
-        if len(paths) >= 10 or len(legs) >= 4:
-            return
         if node == destination:
             paths.append(legs)
             return
-        for leg in SYNTHETIC_LEGS:
+        if len(legs) >= 4:
+            return
+        for leg in (*SYNTHETIC_LEGS, *PUBLISHED_CONNECTIONS):
             if leg["from"] == node and leg["to"] not in visited:
                 walk(leg["to"], legs + [leg], visited | {leg["to"]})
     walk(origin, [], {origin})
@@ -271,14 +299,18 @@ def synthetic_paths(shipment: ShipmentRequest) -> list[dict]:
         hours = sum(leg["hours"] for leg in legs)
         deadline_ok = shipment.deadline is None or hours <= max(0, (shipment.deadline - datetime.now(timezone.utc)).total_seconds() / 3600)
         options.append({
-            "mode": legs[-1]["mode"], "distance_km": 0, "transit_hours_estimate": round(hours, 1),
+            "mode": next((edge["mode"] for edge in legs if edge["mode"] in {"air", "sea"}), legs[-1]["mode"]),
+            "distance_km": 0, "transit_hours_estimate": round(hours, 1),
             "cost_estimate_usd": round(sum(shipment.weight_kg * leg["cost_per_kg"] for leg in legs), 2),
             "mode_feasible": not reasons, "deadline_feasible": deadline_ok, "feasible": not reasons and deadline_ok,
             "feasibility_reason": "Connected synthetic network path." if not reasons else "; ".join(sorted(set(reasons))),
             "risk_score_estimate": round(sum(leg["risk"] for leg in legs) / len(legs), 2),
             "provenance": Provenance.SYNTHETIC.value, "distance_method": "Synthetic connected-leg network.",
-            "legs": [{"id":leg["id"],"from":leg["from"],"to":leg["to"],"mode":leg["mode"],"hours":leg["hours"],"capacity_kg":leg["capacity_kg"]} for leg in legs],
+            "legs": [{"id":leg["id"],"from":leg["from"],"to":leg["to"],"mode":leg["mode"],"hours":leg["hours"],
+                      "capacity_kg":leg["capacity_kg"], "via":leg.get("via", [])} for leg in legs],
             "evidence_ids": [leg["id"] for leg in legs], "capacity_kg": min(leg["capacity_kg"] for leg in legs),
+            "source_references": list(dict.fromkeys(source for leg in legs
+                if (source := leg.get("source_reference") or LANE_SOURCES.get(leg["id"])))),
         })
     return sorted(options, key=lambda item:(not item["feasible"], item["cost_estimate_usd"], item["transit_hours_estimate"]))
 
@@ -300,23 +332,20 @@ def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
         if mode == "road":
             if road_options:
                 continue
-            mode_feasible=same_country and CITY_COUNTRIES[origin] != "india"
+            mode_feasible=False
             if same_country and CITY_COUNTRIES[origin] == "india":
                 feasibility_reason = "No connected path is available in the offline India road graph."
             else:
-                feasibility_reason="Sample cities share a country; this is only a demo eligibility check, not a road-network route." if mode_feasible else "Offline estimates provide no cross-border road routing."
+                feasibility_reason="Offline estimates provide no cross-border road routing." if not same_country else "No connected road-network evidence is available."
         elif mode == "rail":
-            mode_feasible = {origin, destination} == {"mumbai", "delhi"}
-            feasibility_reason = "Synthetic rail corridor is limited to Mumbai–Delhi."
+            mode_feasible = False
+            feasibility_reason = "No explicit rail connection is available for this pair."
         elif mode == "sea":
-            domestic_india = same_country and CITY_COUNTRIES[origin] == "india"
-            mode_feasible=not domestic_india and origin in PORT_CITIES and destination in PORT_CITIES
-            feasibility_reason="Both sample cities are treated as port nodes; a real maritime lane is not calculated." if mode_feasible else "Sea mode requires both sample cities to be in the built-in port list; inland transfers are not modeled."
-            if domestic_india:
-                feasibility_reason = "No explicit synthetic coastal shipping corridor is configured for this pair."
+            mode_feasible = False
+            feasibility_reason = "No explicit shipping connection is available in the corridor catalog."
         else:
-            mode_feasible=True
-            feasibility_reason="Both cities are in the offline sample table; airport availability, schedules, and actual service are not verified."
+            mode_feasible=False
+            feasibility_reason="No explicit air cargo connection is available in the corridor catalog."
         # Detour factors only approximate network routing; distances are not road/sea network paths.
         if not fits_package(shipment, mode):
             mode_feasible = False
@@ -330,12 +359,24 @@ def calculate_routes(shipment: ShipmentRequest) -> list[dict]:
         results.append({"mode":mode,"distance_km":round(network_estimate,1),"transit_hours_estimate":round(transit_hours,1),"cost_estimate_usd":round(cost,2),"mode_feasible":mode_feasible,"deadline_feasible":deadline_ok,"feasible":feasible,"feasibility_reason":feasibility_reason,"risk_score_estimate": {"rail":0.18,"air":0.12,"sea":0.30,"road":0.22}[mode],"provenance":Provenance.ESTIMATED.value,"distance_method":"straight-line distance × fixed demo factor; not a navigable route"})
     return sorted(results,key=lambda r:(not r["feasible"],r["cost_estimate_usd"],r["transit_hours_estimate"]))
 
-def validate_documents(shipment: ShipmentRequest) -> dict:
+TRANSPORT_DOCUMENTS = {"road": "consignment_note", "rail": "consignment_note",
+                       "air": "air_waybill", "sea": "bill_of_lading"}
+
+
+def validate_documents(shipment: ShipmentRequest, selected_modes: set[str] | None = None) -> dict:
     by_type = {doc.document_type: doc for doc in shipment.documents}
     surface_only = set(shipment.allowed_modes) <= {"road", "rail"}
     domestic = all(CITY_COUNTRIES.get(place.casefold()) == "india" for place in (shipment.origin, shipment.destination))
     transport_doc = "consignment_note" if surface_only and domestic else "bill_of_lading"
-    required = ["commercial_invoice", "packing_list", transport_doc]
+    required = ["commercial_invoice", "packing_list"]
+    if selected_modes:
+        required += sorted({TRANSPORT_DOCUMENTS[mode] for mode in selected_modes})
+    elif not shipment.requires_submitted_offers:
+        required.append(transport_doc)
+    elif len(shipment.allowed_modes) == 1:
+        required.append(TRANSPORT_DOCUMENTS[shipment.allowed_modes[0]])
+    elif not set(by_type) & set(TRANSPORT_DOCUMENTS.values()):
+        required.append("transport_document_for_selected_mode")
     missing = [kind for kind in required if kind not in by_type]
     issues = []
     from decimal import Decimal, InvalidOperation
@@ -352,7 +393,8 @@ def validate_documents(shipment: ShipmentRequest) -> dict:
         seen.add(fingerprint)
         required_fields = {"commercial_invoice": ("invoice_number","shipper","consignee","currency","total"),
                            "packing_list": ("package_count",), "bill_of_lading": ("consignee",),
-                           "consignment_note": ("consignee", "consignment_number")}
+                           "consignment_note": ("consignee", "consignment_number"),
+                           "air_waybill": ("consignee", "air_waybill_number")}
         for key in required_fields.get(doc.document_type, ()):
             if not str(fields.get(key) if fields.get(key) is not None else "").strip():
                 issues.append(f"{doc.document_type} is missing {key}")
@@ -413,7 +455,7 @@ def compare_quotes(quotes: list[Quote], feasible_modes: set[str]) -> dict:
     return {"quotes_received":len(quotes),"eligible_quotes":len(eligible),"ranked_quotes":[{"carrier_id":q.carrier_id,"mode":q.mode,"amount":q.amount,"currency":q.currency,"includes_insurance":q.includes_insurance,"valid_until":q.valid_until.isoformat() if q.valid_until else None,"provenance":q.provenance.value} for q in ranked],"recommendation":recommendation,"recommendation_warning":warning,"note":"Quote ranking compares user-provided quotes only; no FX conversion, market-price lookup, or booking is performed."}
 
 
-def impact_options(shipment: ShipmentRequest) -> dict:
+def impact_options(shipment: ShipmentRequest, provider_routes: list[dict] | None = None) -> dict:
     """Evaluate split allocations over explicitly modeled synthetic corridors."""
     import itertools
 
@@ -430,21 +472,37 @@ def impact_options(shipment: ShipmentRequest) -> dict:
     ]
     legacy_lane = (shipment.origin.casefold(), shipment.destination.casefold()) == ("dubai", "mumbai")
     paths = domestic_paths or ([(edges[0], main, edges[3]) for main in edges[1:3]] if legacy_lane else [])
+    catalog_by_id = {edge["id"]: edge for edge in (*SYNTHETIC_LEGS, *PUBLISHED_CONNECTIONS)}
+    if not paths:
+        paths = [
+            tuple((edge["id"], edge["from"], edge["to"], edge["mode"], edge["hours"] / 24,
+                   catalog_by_id[edge["id"]]["cost_per_kg"] * DEMO_INR_PER_USD, edge["capacity_kg"]) for edge in row["legs"])
+            for row in synthetic_paths(shipment)
+        ]
     road_paths = []
     closed_ids = {value.casefold().strip() for value in scenario.closed_leg_ids}
-    if "road" in shipment.allowed_modes and "road" not in closed_ids:
+    if provider_routes is None and "road" in shipment.allowed_modes and "road" not in closed_ids:
         road_paths = india_road_paths(shipment, scenario.closed_leg_ids)
     # Explicit road segments supersede the one-hop regional approximations.
-    if road_paths or india_road_paths(shipment.model_copy(update={"disruptions": []})):
-        paths = [path for path in paths if path[1][3] != "road"]
+    if provider_routes is not None or road_paths or india_road_paths(shipment.model_copy(update={"disruptions": []})):
+        paths = [path for path in paths if not all(edge[3] == "road" for edge in path)]
+    provider_by_id = {route["evidence_ids"][0]: route for route in (provider_routes or [])}
+    if "road" not in closed_ids:
+        road_paths += [
+            ((key, shipment.origin.casefold(), shipment.destination.casefold(), "road",
+              route["transit_hours_estimate"] / 24, route["modeled_freight_inr_per_kg"], route["capacity_kg"]),)
+            for key, route in provider_by_id.items()
+        ]
     paths = [*paths, *road_paths]
-    names = {path: (f"road-{road_paths.index(path) + 1}" if path in road_paths else path[1][0])
+    names = {path: (f"road-{road_paths.index(path) + 1}" if path in road_paths else
+                    "+".join(edge[0] for edge in path) if path[0][0] in catalog_by_id else path[1][0])
              for path in paths}
     # Each ordered pair assigns the critical and remaining portions respectively.
     options, rejected = [], []
     if not paths:
         rejected.append(dict(option=None, reasons=["no_connected_impact_corridor"]))
-    remaining_days = ((shipment.deadline - datetime.now(timezone.utc)).total_seconds() / 86400
+    departure = effective_departure(shipment)
+    remaining_days = ((shipment.deadline - departure).total_seconds() / 86400
                       if shipment.deadline else None)
     for first, second in itertools.product(paths, repeat=2):
         if critical == weight and first != second:
@@ -457,6 +515,7 @@ def impact_options(shipment: ShipmentRequest) -> dict:
         for path, mass in loads:
             legs = []
             for leg, origin, destination, mode, days, rate, capacity in path:
+                provider = provider_by_id.get(leg)
                 quantities[leg] = quantities.get(leg, Decimal(0)) + mass
                 if quantities[leg] > capacity:
                     reasons.add(f"capacity:{leg}")
@@ -466,19 +525,31 @@ def impact_options(shipment: ShipmentRequest) -> dict:
                     reasons.add(f"closed:{leg}")
                 if mode not in shipment.allowed_modes:
                     reasons.add(f"mode:{mode}")
+                if provider and not provider["feasible"]:
+                    reasons.add(f"provider_road:{provider['feasibility_reason']}")
                 charge = mass * Decimal(str(rate)) * Decimal(str(scenario.freight_multiplier))
                 freight += charge
                 road_graph_leg = leg.startswith("IN-ROAD-")
+                catalog = catalog_by_id.get(leg) or {}
+                source = catalog.get("source_reference") or LANE_SOURCES.get(leg)
+                if legacy_lane and leg == "ocean":
+                    source = INDIA_GULF
                 legs.append(dict(id=leg,origin=origin,destination=destination,mode=mode,freight_inr=float(charge),
                                  rate_inr_per_kg=rate, capacity_kg=capacity, base_transit_hours=days * 24,
-                                 distance_km=road_leg_km(origin, destination) if road_graph_leg else None,
-                                 provenance="ESTIMATED" if road_graph_leg else "SYNTHETIC"))
+                                 distance_km=provider["distance_km"] if provider else road_leg_km(origin, destination) if road_graph_leg else None,
+                                 source_references=provider["source_references"] if provider else [source] if source else
+                                                   domestic_sources(shipment.origin, shipment.destination, mode),
+                                 provenance="ESTIMATED" if road_graph_leg or provider else "SYNTHETIC"))
             signals = [
                 signal for signal in shipment.disruptions
-                if any(disruption_matches_leg(signal, mode, start, end, leg) for leg, start, end, mode, *_ in path)
+                if any(disruption_matches_leg(signal, mode, start, end, leg, catalog_by_id.get(leg, {}).get("via", ()))
+                       for leg, start, end, mode, *_ in path)
             ]
             reasons.update(f"disruption:{signal.signal_id}" for signal in signals if signal.severity >= .95)
-            eta = sum(edge[4] for edge in path) + sum(signal.delay_hours for signal in signals) / 24
+            provider_applied = {signal_id for edge in path if edge[0] in provider_by_id
+                                for signal_id in provider_by_id[edge[0]]["disruption_ids"]}
+            eta = sum(edge[4] for edge in path) + sum(signal.delay_hours for signal in signals
+                                                      if signal.signal_id not in provider_applied) / 24
             if remaining_days is not None and eta > remaining_days:
                 reasons.add("hard_deadline")
             portions.append(dict(weight_kg=float(mass), arrival_days=eta, legs=legs,
@@ -494,7 +565,15 @@ def impact_options(shipment: ShipmentRequest) -> dict:
                             delay_loss_inr=round(delay,2),total_impact_inr=round(float(freight)+delay,2)))
     options.sort(key=lambda o:(o["total_impact_inr"],len(o["portions"]),o["option"]))
     return dict(provenance="SYNTHETIC", options=options,rejected=rejected,
-                source_references=[MORTH_CORRIDORS, MORTH_HIGHWAY_MAP] if road_paths else [],
+                source_references=list(dict.fromkeys(
+                    ([MORTH_CORRIDORS, MORTH_HIGHWAY_MAP] if road_paths and provider_routes is None else [])
+                    + domestic_sources(shipment.origin, shipment.destination, "sea")
+                    + [source for row in provider_by_id.values() for source in row["source_references"]])),
                 preferred=options[0]["option"] if options else None,
                 assumptions=["Critical cargo arrives with the first portion and ends the modeled stoppage.",
-                             "Rates, hubs, capacities and durations are synthetic. Taxes and insurance excluded."])
+                             "Offline rates, handling, capacities and durations are synthetic. Provider road times and forecasts have separate evidence. Taxes, tolls and insurance are excluded from modeled freight."])
+
+
+def effective_departure(shipment: ShipmentRequest, now: datetime | None = None) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    return max(now, shipment.road_guidance.departure_at) if shipment.road_guidance else now

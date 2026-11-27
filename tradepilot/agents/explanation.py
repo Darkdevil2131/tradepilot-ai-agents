@@ -52,13 +52,15 @@ def explain_decision(shipment, results, decision) -> StrategicExplanation:
         return report
     if plan:
         scenario = shipment.impact_scenario
-        report.objective = "Minimize synthetic freight plus modeled production stoppage loss, subject to leg and deadline constraints."
+        submitted = plan["provenance"] == "USER_PROVIDED"
+        basis = "Submitted freight" if submitted else "Synthetic freight"
+        report.objective = "Minimize comparable freight plus modeled production stoppage loss, subject to leg and deadline constraints."
         options = {o["option"]: o for o in comparison["options"]}
         selected = options[plan["option"]]
         portions = ", ".join(f'{p["weight_kg"]:g} kg arriving on day {p["arrival_days"]:g}' for p in selected["portions"])
         report.conclusion = (
             f'Conditionally select {plan["option"]}: {portions}. '
-            f'Synthetic freight is INR {plan["freight_inr"]:,.2f}; modeled stoppage loss is '
+            f'{basis} is INR {plan["freight_inr"]:,.2f}; modeled stoppage loss is '
             f'INR {plan["delay_loss_inr"]:,.2f}; total impact is INR {plan["total_impact_inr"]:,.2f}. '
             'This is the minimum modeled impact among fully sourced feasible candidates in this snapshot.'
         )
@@ -71,7 +73,7 @@ def explain_decision(shipment, results, decision) -> StrategicExplanation:
             report.comparisons.append(dict(option=other["option"], freight_inr=freight,
                 delay_loss_inr=other["delay_loss_inr"], total_impact_inr=total,
                 extra_impact_inr=round(total-plan["total_impact_inr"],2),
-                evidence=f"/agents/carrier_research/data/leg_plans/{index}", provenance="SYNTHETIC"))
+                evidence=f"/agents/carrier_research/data/leg_plans/{index}", provenance=other["provenance"]))
             other_late = max(0, options[other["option"]]["portions"][0]["arrival_days"] - scenario.target_days)
             days_difference = other_late-selected_late
             if days_difference:
@@ -83,6 +85,9 @@ def explain_decision(shipment, results, decision) -> StrategicExplanation:
                         assumption="Fixed feasible paths, capacities, critical weight and freight rates."))
         report.next_actions.append(dict(action="Confirm that the critical portion alone can restart production.",
             owner="operations", reason="The stoppage model ends the entire daily loss when the critical portion arrives."))
+        if submitted:
+            report.next_actions.append(dict(action="Confirm every submitted leg quote and service record with the carrier.",
+                owner="procurement reviewer", reason="Eligibility checks do not independently authenticate offers."))
     elif candidate:
         report.conclusion = (
             f'Conditionally select {candidate["carrier_id"]} by {candidate["mode"]} at '

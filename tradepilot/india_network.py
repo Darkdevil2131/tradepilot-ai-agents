@@ -13,6 +13,7 @@ EXTRA_CITY_COORDS = {
     "ajmer": (26.45, 74.64), "hubballi": (15.36, 75.12), "tumakuru": (13.34, 77.10),
     "bardhaman": (23.23, 87.86), "dhanbad": (23.80, 86.43), "ranchi": (23.34, 85.31),
     "kozhikode": (11.26, 75.78),
+    "gandhidham": (23.08, 70.13), "mundra": (22.74, 69.72),
 }
 
 MORTH_CORRIDORS = (
@@ -21,6 +22,7 @@ MORTH_CORRIDORS = (
 MORTH_HIGHWAY_MAP = (
     "https://morth.nic.in/sites/default/files/PragatiKiNayiGati/gujarat/files/assets/common/downloads/GUJARAT%20GETS%20GOING%20.pdf"
 )
+MUNDRA_PORT_ACCESS = "https://www.adaniports.com/Ports-and-Terminals/Mundra-Port"
 
 # Selected planning waypoints. Adjacent entries are graph edges. Long segments
 # may omit intermediate towns. Regional feeder links are planning assumptions.
@@ -33,6 +35,7 @@ ROAD_CHAINS = (
     ("kerala-tamil-nadu", ("kochi", "thrissur", "coimbatore", "salem", "krishnagiri", "chennai")),
     ("northern-spine", ("delhi", "ambala", "ludhiana", "jalandhar", "jammu", "srinagar")),
     ("western-port-feeder", ("porbandar", "rajkot", "ahmedabad")),
+    ("mundra-access", ("mundra", "gandhidham", "ahmedabad")),
     ("regional-feeder", ("pune", "indore", "bhopal", "jabalpur", "nagpur")),
     ("regional-feeder", ("jhansi", "bhopal", "nagpur")),
     ("regional-feeder", ("udaipur", "indore")),

@@ -4,15 +4,27 @@ A backend prototype for shipment decision support. It uses a LangGraph `StateGra
 
 ## Current capabilities and limits
 
-- Route estimates use a small built-in connected network plus city-coordinate fallback. Feasible options are ranked deterministically by configurable cost, time, risk and reliability weights. User-provided disruption signals adjust delay/risk and can block a route. Results remain estimates—not navigable routes, live ETAs or carrier quotes.
-- Carrier records, contacts, certifications, capacities, coverage and reliability scores are fictional synthetic fixtures. The carrier agent filters capacity/coverage, calculates a service score and returns an approval-gated candidate; none of the demo contacts are bookable.
+- The route planner compares documented Indian trade connections and modeled domestic corridors. Provider road geometry, weather and eligible truck alternatives can participate in multimodal and split-shipment comparisons. It rejects unsupported links and preserves the distinction between published route references and simulated service economics.
+- The orchestrator runs independent investigations in parallel. It checks the final allocation, connected legs, capacity and price arithmetic, then compares the next eligible alternatives if the preferred modeled option conflicts with commercial evidence.
+- Carrier research uses a labeled synthetic directory in demo mode. In submitted mode it checks supplied lane, capacity and quote evidence and can surface public service references for follow-up. Published references do not verify today's availability, current price or reliability.
 - Risk checks are basic keyword and completeness rules. There is no live customs, sanctions, tariff, or jurisdiction screening.
 - Document intelligence validates structured fields, extracts labelled text, accepts PDF/PNG/JPEG/TIFF uploads, extracts PDF tables, and uses local Tesseract OCR for images. It records SHA-256 integrity hashes and PDF signature fields. Authenticity remains `not_verified` unless a future trusted cryptographic-verification adapter is configured.
 - Procurement ranks submitted carrier quotations and supplier offers, enforces quantity/certification gates, refuses cross-currency winners without FX data, and always requires human approval. It never books, purchases or contacts a provider.
 - The commercial API manages RFQ drafts, internal delivery, carrier responses, human approvals, dry-run booking intents, draft purchase orders and tracking events. SMTP is an explicit opt-in adapter; external booking and ERP posting fail closed.
-- Every agent result carries provenance labels where applicable: `USER_PROVIDED`, `ESTIMATED`, or `SYNTHETIC`. The health endpoint confirms that no live logistics feeds are configured.
+- Results label submitted, estimated, synthetic and published reference evidence. The health endpoint reports which optional road and weather providers are configured. Actual availability is reported per analysis. Continuous data feeds are unavailable.
 - Offline mode is the default. Gemini is an optional narrative pass over tool output only; it cannot change calculations, call tools, or establish facts. Its model and API key are supplied via environment variables. It is disabled by default, and quota failures degrade to deterministic results.
 - A Google API key alone does not guarantee zero cost: account/project billing, quotas, and free eligibility are controlled by Google. Keep Gemini disabled unless the owner has confirmed the project is constrained to the no-cost tier and has billing disabled. Never commit a key.
+
+## Corridor coverage
+
+The catalog includes the Cochin–Colombo feeder, Colombo–Chennai connections,
+Gulf links at Mundra and Nhava Sheva, published Singapore links, and the
+India–Europe rotation through Salalah, Suez and Tangier. The domestic road
+graph includes a Mundra access corridor. Sources travel with the returned
+plans. Prices, handling times, capacity and demo carrier performance are
+simulation inputs. No automated market discovery or binding booking is
+available. See [the integration guide](API_INTEGRATION_GUIDE.md) for quote scope,
+transport documents and required provider configuration.
 
 ## Run locally
 

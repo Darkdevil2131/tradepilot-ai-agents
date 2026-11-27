@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from ..intelligence import rank_supplier_offers
 from ..models import ProcurementOutput, QuoteAssessment, ShipmentRequest
 from ..tools import compare_quotes
+from .carrier import CARRIERS
 
 
 class MarketProcurementAgent:
@@ -21,6 +22,26 @@ class MarketProcurementAgent:
         result["supplier_warning"] = suppliers["warning"]
         return ProcurementOutput(**result)
 
+    def assess_split_offers(self, shipment: ShipmentRequest, plans: list[dict]) -> ProcurementOutput:
+        result = self.run(shipment.model_copy(update={"quotes": []}), set())
+        eligible = {index for plan in plans for leg in plan["legs"]
+                    for index in leg.get("eligible_quote_indices", [])}
+        result.quotes_received = len(shipment.quotes)
+        result.eligible_quotes = len(eligible)
+        for index, quote in enumerate(shipment.quotes):
+            reasons = []
+            if index not in eligible:
+                if not quote.leg_total:
+                    reasons.append("leg_total_scope_required_for_split")
+                elif quote.currency != "INR":
+                    reasons.append("split_leg_quote_requires_inr")
+                else:
+                    reasons.append("split_leg_scope_capacity_timing_or_evidence_unconfirmed")
+            result.quote_assessments.append(QuoteAssessment(
+                quote_index=index, carrier_id=quote.carrier_id, eligible=not reasons, reasons=reasons))
+        result.note = "Leg quotes are compared within the same route leg and scope. A plan requires a qualifying award for every leg."
+        return result
+
     def assess_shipment_offers(self, shipment: ShipmentRequest, routes: list[dict], carriers: list[dict]) -> ProcurementOutput:
         """Qualify commercial evidence against the actual route candidates."""
         now = datetime.now(timezone.utc)
@@ -35,11 +56,14 @@ class MarketProcurementAgent:
             reasons = []
             carrier = carriers_by_service.get((quote.carrier_id, quote.mode))
             if carrier is None:
-                reasons.append("carrier_lane_or_capacity_unconfirmed")
+                demo = shipment.requires_submitted_offers and any(
+                    row["carrier_id"] == quote.carrier_id for row in CARRIERS)
+                reasons.append("demo_carrier_excluded_from_submitted_offer_comparison"
+                               if demo else "carrier_lane_or_capacity_unconfirmed")
             matching_routes = [route for route in eligible_routes if route["mode"] == quote.mode]
             if not matching_routes:
                 reasons.append("no_feasible_route_for_mode")
-            if quote.valid_until and quote.valid_until.replace(tzinfo=quote.valid_until.tzinfo or timezone.utc) <= now:
+            if quote.valid_until and quote.valid_until.replace(tzinfo=quote.valid_until.tzinfo or timezone.utc) <= departure:
                 reasons.append("quote_expired")
             supplied = carrier and carrier["provenance"] == "USER_PROVIDED"
             if supplied:

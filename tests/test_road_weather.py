@@ -104,6 +104,38 @@ def test_missing_weather_blocks_commercial_fallback(client, headers, monkeypatch
     assert next(gate for gate in decision["gates"] if gate["gate"] == "route_weather")["status"] == "blocked"
 
 
+def test_multimodal_split_uses_only_safe_provider_road_alternatives(client, headers, monkeypatch, road_trip):
+    calls = install_provider(monkeypatch, road_trip)
+    road_trip.update(allowed_modes=["road", "air", "rail", "sea"], weight_kg=1000,
+                     impact_scenario=dict(critical_weight_kg=200, target_days=.6, daily_stoppage_inr=240000))
+    agents = analyze(client, headers, road_trip)
+    assert all(agent["status"] == "completed" for agent in agents.values())
+    routes = agents["route_optimization"]["data"]
+    storm, = [route for route in routes["routes"] if route["weather"]["severity"] == "high"]
+    safe, = [route for route in routes["routes"] if route["feasible"]]
+    comparison = routes["impact_comparison"]
+    assert any(len(option["portions"]) == 2 for option in comparison["options"])
+    assert any(any("provider_road:" in reason for reason in row["reasons"]) for row in comparison["rejected"])
+    legs = [leg for option in comparison["options"] for portion in option["portions"] for leg in portion["legs"]]
+    assert set(leg["mode"] for leg in legs) == {"road", "air", "rail", "sea"}
+    assert safe["evidence_ids"][0] in {leg["id"] for leg in legs}
+    assert storm["evidence_ids"][0] not in {leg["id"] for leg in legs}
+    assert len(calls) == 2
+
+
+def test_missing_forecast_leaves_nonroad_main_haul_for_split(client, headers, monkeypatch, road_trip):
+    install_provider(monkeypatch, road_trip, "down")
+    road_trip.update(allowed_modes=["road", "air", "rail"], commercial_mode="submitted",
+                     impact_scenario=dict(critical_weight_kg=100, target_days=1, daily_stoppage_inr=1000))
+    agents = analyze(client, headers, road_trip)
+    route = agents["route_optimization"]["data"]
+    assert route["provider_status"] == "weather_unavailable"
+    assert route["impact_comparison"]["options"]
+    assert not any(row["option"].startswith("road-") or "/road-" in row["option"]
+                   for row in route["impact_comparison"]["options"])
+    assert agents["logistics_orchestrator"]["data"]["decision"]["candidate"] is None
+
+
 def test_partial_forecast_and_delayed_departure(client, headers, monkeypatch, road_trip):
     install_provider(monkeypatch, road_trip, "missing")
     road_trip["disruptions"] = [dict(signal_id="traffic-report", affected_modes=["road"], severity=.4, delay_hours=3)]

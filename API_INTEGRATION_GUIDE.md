@@ -122,7 +122,7 @@ Ordinary route comparisons expose `cost_estimate_inr` on modeled India
 corridors. The legacy USD field uses a fixed illustrative INR 85/USD
 conversion. Quoted amounts retain their own currency. With road disabled,
 ordinary air, sea, and rail options cover terminal-to-terminal movement only.
-Road routes use 57 selected hubs and 70 bidirectional planning links,
+Road routes use selected hubs and bidirectional planning links,
 including major national corridors and regional feeders. The agent can use
 these linked roads even where no dedicated multimodal fixture exists.
 Corridor references describe broad geography. Estimated distances, drive
@@ -147,10 +147,23 @@ to show why each offer was rejected. Check the orchestrator's
 tariffs. If a closure changes the route, the old quote requires a new match.
 Set `commercial_mode: "submitted"` for real shipments so the workflow
 requires submitted evidence even while carrier offers are still outstanding.
-Shipment-wide quotes cannot qualify a split shipment with separately sourced legs.
-Missing contacts and history stay empty or unknown. For domestic road/rail-only
-requests, submit a `consignment_note` with its number and consignee. A conflict
-between raw labelled document text and explicit fields blocks validation.
+For a split plan, send a separate INR quote for each distinct leg. Set
+`leg_total: true`, use the leg's ID in the single-element `route_leg_ids` list
+on both the quote and carrier service, and provide the exact directional leg
+endpoints on the service. Each offer must cover the total mass allocated to
+that leg across both portions. The planner checks scope, expiry, modeled timing,
+and comparable insurance terms. Operator references still require confirmation.
+The orchestrator verifies the combined awards and can select an alternative
+when the cheapest modeled plan lacks eligible leg quotes.
+
+Carrier results expose `published_services` for matching public schedule
+references. These leads do not provide present availability or pricing.
+Missing contacts and history stay empty or unknown. For submitted
+commercial plans, supply the transport documents for the modes actually
+chosen. Road and rail use a consignment note, air uses an air waybill, and sea
+uses a bill of lading as configured screening checks. A conflict between
+raw labelled text and supplied fields blocks validation. Document
+authenticity remains unverified.
 
 ## Provider geometry and road weather
 
@@ -161,7 +174,16 @@ eligible non-commercial workloads. OSRM can be self-hosted. No default
 endpoint calls are enabled. Use endpoints approved to receive shipment
 coordinates. Keep both endpoints server-side.
 
-For a road-only shipment, add `road_guidance` to the normal analysis request:
+Add `road_guidance` to a shipment that allows road. For a road-only shipment
+without an impact scenario, the response preserves the provider-only
+contract and leaves freight price unavailable. In a multimodal comparison or
+split scenario, provider road alternatives compete with modeled alternatives.
+Incomplete forecasts or truck restrictions remove affected road alternatives.
+Other modes and modeled access legs can still be compared. Their weather,
+availability and rates have separate evidence limits. In a split scenario,
+read road weather and geometry from `routes` using each portion's leg ID.
+
+Example road-only request:
 
 ```json
 {

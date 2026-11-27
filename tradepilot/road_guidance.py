@@ -12,7 +12,7 @@ import re
 import httpx
 
 from .models import RouteOptimizationOutput, ShipmentRequest
-from .tools import disruption_matches_leg
+from .tools import CITY_COORDS, disruption_matches_leg, effective_departure, fits_package
 from .truck_routing import HERE_REFERENCE, fetch_truck_routes
 
 
@@ -21,6 +21,7 @@ WEATHER_REFERENCE = "https://open-meteo.com/en/docs"
 FIELDS = ("precipitation", "wind_gusts_10m", "visibility", "weather_code")
 MAX_ROUTES = 3
 MAX_SAMPLES = 12
+MAX_CITY_ACCESS_KM = 75
 
 
 def _km(a, b):
@@ -163,6 +164,7 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
     weather_url = os.getenv("TRADEPILOT_FORECAST_URL", "").strip()
     profile = os.getenv("TRADEPILOT_OSRM_PROFILE", "driving")
     request = shipment.road_guidance
+    departure = effective_departure(shipment)
     is_truck = request.truck is not None
     here_key = os.getenv("TRADEPILOT_HERE_API_KEY", "").strip()
     if is_truck:
@@ -172,6 +174,10 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
         return _output("not_configured")
     start = (request.origin.longitude, request.origin.latitude)
     end = (request.destination.longitude, request.destination.latitude)
+    for city, point in ((shipment.origin, start), (shipment.destination, end)):
+        center = CITY_COORDS.get(city.casefold())
+        if center and _km((center[1], center[0]), point) > MAX_CITY_ACCESS_KM:
+            return _output("endpoint_mismatch")
     coordinates = ";".join(f"{lon:.6f},{lat:.6f}" for lon, lat in (start, end))
     routes = []
     try:
@@ -211,7 +217,7 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
                                if disruption_matches_leg(signal, "road", shipment.origin, shipment.destination, key)]
                     hours += sum(signal.delay_hours for signal in signals)
                     clock = _segment_clock(raw, shape)
-                    samples = _sample_route(shape, km, hours, request.departure_at, clock)
+                    samples = _sample_route(shape, km, hours, departure, clock)
                     seen.add(key)
                     routes.append((key, shape, km, hours, samples, signals, clock is not None, raw.get("truck_evidence")))
                 except (TypeError, ValueError, KeyError, IndexError):
@@ -232,7 +238,7 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
         severity = ("high" if any(point["flag"] == "high" for point in points) else
                     "unknown" if status != "complete" else
                     "elevated" if any(point["flag"] == "elevated" for point in points) else "low")
-        deadline_ok = shipment.deadline is None or request.departure_at + timedelta(hours=hours) <= shipment.deadline
+        deadline_ok = shipment.deadline is None or departure + timedelta(hours=hours) <= shipment.deadline
         reasons = []
         if status != "complete":
             reasons.append("Forecast coverage is incomplete")
@@ -240,6 +246,8 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
             reasons.append("An hourly forecast sample triggered a high weather flag")
         if not deadline_ok:
             reasons.append("Modeled arrival misses the deadline")
+        if not fits_package(shipment, "road"):
+            reasons.append("Package exceeds the modeled road service dimensions")
         if any(signal.severity >= .95 for signal in signals):
             reasons.append("Reported disruption blocks this route")
         if truck:
@@ -253,7 +261,7 @@ def provider_road_guidance(shipment: ShipmentRequest) -> RouteOptimizationOutput
                 reasons.append("Toll estimate exceeds the stated budget")
         options.append(dict(
             mode="road", distance_km=round(km, 2), transit_hours_estimate=round(hours, 3),
-            mode_feasible=not truck or truck["access_status"] != "restriction_reported",
+            mode_feasible=fits_package(shipment, "road") and (not truck or truck["access_status"] != "restriction_reported"),
             deadline_feasible=deadline_ok, feasible=not reasons,
             feasibility_reason="; ".join(reasons) if reasons else
             ("Truck profile, time-aware duration, INR toll estimate and sampled forecasts are available." if truck else
